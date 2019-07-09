@@ -1,6 +1,6 @@
-# 概要
-
 HTTP over Google Cloud Pub/Sub Gateway server.
+
+[![Docker Automated build](https://img.shields.io/docker/automated/pyyoshi/pubsub-gateway-server.svg)](https://hub.docker.com/r/pyyoshi/pubsub-gateway-server/) [![Docker Build Status](https://img.shields.io/docker/build/pyyoshi/pubsub-gateway-server.svg)](https://hub.docker.com/r/pyyoshi/pubsub-gateway-server/)
 
 # gateway-server
 
