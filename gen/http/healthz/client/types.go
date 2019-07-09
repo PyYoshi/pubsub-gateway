@@ -3,6 +3,6 @@
 // healthz HTTP client types
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package client

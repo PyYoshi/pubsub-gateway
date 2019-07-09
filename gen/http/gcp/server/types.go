@@ -3,15 +3,15 @@
 // gcp HTTP server types
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package server
 
 import (
 	"unicode/utf8"
 
-	gcp "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp"
-	gcpviews "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp/views"
+	gcp "github.com/PyYoshi/pubsub-gateway/gen/gcp"
+	gcpviews "github.com/PyYoshi/pubsub-gateway/gen/gcp/views"
 	goa "goa.design/goa/v3/pkg"
 )
 

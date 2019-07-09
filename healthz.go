@@ -3,8 +3,8 @@ package pubusubgateway
 import (
 	"context"
 
-	healthz "github.com/PyYoshi/cloud_pubsub_gateway/gen/healthz"
-	log "github.com/PyYoshi/cloud_pubsub_gateway/gen/log"
+	healthz "github.com/PyYoshi/pubsub-gateway/gen/healthz"
+	log "github.com/PyYoshi/pubsub-gateway/gen/log"
 )
 
 // healthz service example implementation.

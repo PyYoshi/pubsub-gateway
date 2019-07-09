@@ -3,13 +3,13 @@
 // gcp HTTP client types
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package client
 
 import (
-	gcp "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp"
-	gcpviews "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp/views"
+	gcp "github.com/PyYoshi/pubsub-gateway/gen/gcp"
+	gcpviews "github.com/PyYoshi/pubsub-gateway/gen/gcp/views"
 )
 
 // PublishRequestBody is the type of the "gcp" service "publish" endpoint HTTP

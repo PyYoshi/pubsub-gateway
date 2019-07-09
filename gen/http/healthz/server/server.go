@@ -3,7 +3,7 @@
 // healthz HTTP server
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package server
 
@@ -11,7 +11,7 @@ import (
 	"context"
 	"net/http"
 
-	healthz "github.com/PyYoshi/cloud_pubsub_gateway/gen/healthz"
+	healthz "github.com/PyYoshi/pubsub-gateway/gen/healthz"
 	goahttp "goa.design/goa/v3/http"
 	goa "goa.design/goa/v3/pkg"
 )

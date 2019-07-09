@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"cloud.google.com/go/pubsub"
-	"github.com/PyYoshi/cloud_pubsub_gateway/config"
-	gcp "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp"
-	log "github.com/PyYoshi/cloud_pubsub_gateway/gen/log"
+	"github.com/PyYoshi/pubsub-gateway/config"
+	gcp "github.com/PyYoshi/pubsub-gateway/gen/gcp"
+	log "github.com/PyYoshi/pubsub-gateway/gen/log"
 )
 
 // gcp service example implementation.

@@ -3,7 +3,7 @@
 // gateway HTTP client CLI support package
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package cli
 
@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"os"
 
-	gcpc "github.com/PyYoshi/cloud_pubsub_gateway/gen/http/gcp/client"
-	healthzc "github.com/PyYoshi/cloud_pubsub_gateway/gen/http/healthz/client"
+	gcpc "github.com/PyYoshi/pubsub-gateway/gen/http/gcp/client"
+	healthzc "github.com/PyYoshi/pubsub-gateway/gen/http/healthz/client"
 	goahttp "goa.design/goa/v3/http"
 	goa "goa.design/goa/v3/pkg"
 )

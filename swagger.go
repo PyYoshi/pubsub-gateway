@@ -1,8 +1,8 @@
 package pubusubgateway
 
 // import (
-// 	log "github.com/PyYoshi/cloud_pubsub_gateway/gen/log"
-// 	swagger "github.com/PyYoshi/cloud_pubsub_gateway/gen/swagger"
+// 	log "github.com/PyYoshi/pubsub-gateway/gen/log"
+// 	swagger "github.com/PyYoshi/pubsub-gateway/gen/swagger"
 // )
 
 // // swagger service example implementation.

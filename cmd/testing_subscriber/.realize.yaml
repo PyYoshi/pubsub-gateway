@@ -17,7 +17,7 @@ settings:
     interval: 0s
 schema:
 - name: testing-subscriber-v1
-  path: /go/src/github.com/PyYoshi/cloud_pubsub_gateway/cmd/testing_subscriber
+  path: /go/src/github.com/PyYoshi/pubsub-gateway/cmd/testing_subscriber
   commands:
     vet:
       status: false

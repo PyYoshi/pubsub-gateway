@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	cli "github.com/PyYoshi/cloud_pubsub_gateway/gen/http/cli/gateway"
+	cli "github.com/PyYoshi/pubsub-gateway/gen/http/cli/gateway"
 	goahttp "goa.design/goa/v3/http"
 	goa "goa.design/goa/v3/pkg"
 )

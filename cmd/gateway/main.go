@@ -9,11 +9,11 @@ import (
 	"sync"
 
 	"cloud.google.com/go/pubsub"
-	pubusubgateway "github.com/PyYoshi/cloud_pubsub_gateway"
-	"github.com/PyYoshi/cloud_pubsub_gateway/config"
-	gcp "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp"
-	healthz "github.com/PyYoshi/cloud_pubsub_gateway/gen/healthz"
-	log "github.com/PyYoshi/cloud_pubsub_gateway/gen/log"
+	pubusubgateway "github.com/PyYoshi/pubsub-gateway"
+	"github.com/PyYoshi/pubsub-gateway/config"
+	gcp "github.com/PyYoshi/pubsub-gateway/gen/gcp"
+	healthz "github.com/PyYoshi/pubsub-gateway/gen/healthz"
+	log "github.com/PyYoshi/pubsub-gateway/gen/log"
 	"google.golang.org/api/option"
 )
 

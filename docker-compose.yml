@@ -22,7 +22,7 @@ services:
       - GATEWAY_SERVER_BIND_ADDRESS=0.0.0.0:8090
       - PUBSUB_EMULATOR_HOST=pubsub_emulator:8086
     volumes:
-      - ./:/go/src/github.com/PyYoshi/cloud_pubsub_gateway
+      - ./:/go/src/github.com/PyYoshi/pubsub-gateway
 
   testing_subscriber:
     build:
@@ -38,4 +38,4 @@ services:
       - PUBSUB_TOPIC=testing-subscriber-topic
       - PUBSUB_SUBSCRIPTION=testing-subscriber-subscription
     volumes:
-      - ./:/go/src/github.com/PyYoshi/cloud_pubsub_gateway
+      - ./:/go/src/github.com/PyYoshi/pubsub-gateway

@@ -3,7 +3,7 @@
 // gcp HTTP server encoders and decoders
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package server
 
@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"unicode/utf8"
 
-	gcpviews "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp/views"
+	gcpviews "github.com/PyYoshi/pubsub-gateway/gen/gcp/views"
 	goahttp "goa.design/goa/v3/http"
 	goa "goa.design/goa/v3/pkg"
 )

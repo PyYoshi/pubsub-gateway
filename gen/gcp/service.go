@@ -3,14 +3,14 @@
 // gcp service
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package gcp
 
 import (
 	"context"
 
-	gcpviews "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp/views"
+	gcpviews "github.com/PyYoshi/pubsub-gateway/gen/gcp/views"
 )
 
 // Google Cloud Pub/Sub向けサービス

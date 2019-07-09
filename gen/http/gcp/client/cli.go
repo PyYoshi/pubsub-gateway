@@ -3,7 +3,7 @@
 // gcp HTTP client CLI support package
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package client
 
@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	gcp "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp"
+	gcp "github.com/PyYoshi/pubsub-gateway/gen/gcp"
 	goa "goa.design/goa/v3/pkg"
 )
 

@@ -3,7 +3,7 @@
 // gcp HTTP client encoders and decoders
 //
 // Command:
-// $ goa gen github.com/PyYoshi/cloud_pubsub_gateway/design -o ./
+// $ goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
 
 package client
 
@@ -14,8 +14,8 @@ import (
 	"net/http"
 	"net/url"
 
-	gcp "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp"
-	gcpviews "github.com/PyYoshi/cloud_pubsub_gateway/gen/gcp/views"
+	gcp "github.com/PyYoshi/pubsub-gateway/gen/gcp"
+	gcpviews "github.com/PyYoshi/pubsub-gateway/gen/gcp/views"
 	goahttp "goa.design/goa/v3/http"
 )
 
