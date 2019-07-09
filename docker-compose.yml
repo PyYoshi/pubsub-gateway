@@ -1,0 +1,41 @@
+version: '3'
+services: 
+  pubsub_emulator:
+    build:
+      context: ./dockerfiles/pubsub_emulator/
+      dockerfile: Dockerfile
+    ports:
+      - 8086:8086
+      
+  gateway:
+    build:
+      context: ./
+      dockerfile: ./dockerfiles/develop/Dockerfile
+    depends_on:
+      - pubsub_emulator
+      - testing_subscriber
+    ports:
+      - 8090:8090
+    env_file: ./app.env
+    environment: 
+      - GATEWAY_SERVER_DEBUG=true
+      - GATEWAY_SERVER_BIND_ADDRESS=0.0.0.0:8090
+      - PUBSUB_EMULATOR_HOST=pubsub_emulator:8086
+    volumes:
+      - ./:/go/src/github.com/PyYoshi/cloud_pubsub_gateway
+
+  testing_subscriber:
+    build:
+      context: ./
+      dockerfile: ./dockerfiles/testing_subscriber/Dockerfile
+    depends_on:
+      - pubsub_emulator
+    ports:
+      - 8089:8089
+    env_file: ./app.env
+    environment: 
+      - PUBSUB_EMULATOR_HOST=pubsub_emulator:8086
+      - PUBSUB_TOPIC=testing-subscriber-topic
+      - PUBSUB_SUBSCRIPTION=testing-subscriber-subscription
+    volumes:
+      - ./:/go/src/github.com/PyYoshi/cloud_pubsub_gateway
