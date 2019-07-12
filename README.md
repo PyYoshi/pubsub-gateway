@@ -1,4 +1,4 @@
-HTTP over Google Cloud Pub/Sub Gateway server.
+Google Cloud Pub/Sub over HTTP Gateway server.
 
 [![Docker Automated build](https://img.shields.io/docker/automated/pyyoshi/pubsub-gateway-server.svg)](https://hub.docker.com/r/pyyoshi/pubsub-gateway-server/) [![Docker Build Status](https://img.shields.io/docker/build/pyyoshi/pubsub-gateway-server.svg)](https://hub.docker.com/r/pyyoshi/pubsub-gateway-server/)
 
