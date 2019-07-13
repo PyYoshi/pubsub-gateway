@@ -5,6 +5,8 @@ RUN \
     apk --no-cache add \
         git \
         bash \
+        coreutils \
+        ca-certificates \
     && mkdir -p /go/src/github.com/PyYoshi/pubsub-gateway/cmd/gateway \
     && go get -u -v \
         github.com/oxequa/realize

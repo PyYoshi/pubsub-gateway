@@ -12,7 +12,11 @@ RUN \
 FROM alpine:3.9
 
 RUN \
-  mkdir -p /opt/pubsub-gateway/bin
+    apk --no-cache add \
+        bash \
+        coreutils \
+        ca-certificates \
+    && mkdir -p /opt/pubsub-gateway/bin
 
 COPY --from=builder /go/src/github.com/PyYoshi/pubsub-gateway/dist/gateway-server /opt/pubsub-gateway/bin/gateway-server
 COPY --from=builder /go/src/github.com/PyYoshi/pubsub-gateway/gen/http/openapi.yaml /opt/pubsub-gateway/openapi.yaml
