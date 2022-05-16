@@ -70,8 +70,8 @@ func handleHTTPServer(
 	)
 	{
 		eh := errorHandler(logger)
-		gcpServer = gcpsvr.New(gcpEndpoints, mux, dec, enc, eh)
-		healthzServer = healthzsvr.New(healthzEndpoints, mux, dec, enc, eh)
+		gcpServer = gcpsvr.New(gcpEndpoints, mux, dec, enc, eh, nil)
+		healthzServer = healthzsvr.New(healthzEndpoints, mux, dec, enc, eh, nil)
 		// swaggerServer = swaggersvr.New(nil, mux, dec, enc, eh)
 	}
 	// Configure the mux.
@@ -130,7 +130,7 @@ func handleHTTPServer(
 func errorHandler(logger *log.Logger) func(context.Context, http.ResponseWriter, error) {
 	return func(ctx context.Context, w http.ResponseWriter, err error) {
 		id := ctx.Value(middleware.RequestIDKey).(string)
-		w.Write([]byte("[" + id + "] encoding: " + err.Error()))
+		_, _ = w.Write([]byte("[" + id + "] encoding: " + err.Error()))
 		logger.With(zap.String("id", id)).Error(err.Error())
 	}
 }

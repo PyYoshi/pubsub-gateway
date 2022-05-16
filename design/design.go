@@ -1,6 +1,7 @@
 package design
 
 import (
+	_ "goa.design/goa/v3/codegen/generator"
 	"goa.design/goa/v3/dsl"
 	_ "goa.design/plugins/v3/zaplogger"
 )
