@@ -1,9 +1,11 @@
 package expr
 
 import (
+	"fmt"
 	"sort"
 
 	"goa.design/goa/v3/eval"
+	goa "goa.design/goa/v3/pkg"
 )
 
 // Root is the root object built by the DSL.
@@ -32,9 +34,6 @@ type (
 		Creations []*TypeMap
 		// Schemes list the registered security schemes.
 		Schemes []*SchemeExpr
-		// Meta is a set of key/value pairs with semantic that is
-		// specific to each generator.
-		Meta MetaExpr
 	}
 
 	// MetaExpr is a set of key/value pairs
@@ -64,11 +63,7 @@ func (r *RootExpr) WalkSets(walk eval.SetWalker) {
 	walk(eval.ExpressionSet{r.API})
 
 	// Servers
-	servers := make(eval.ExpressionSet, len(r.API.Servers))
-	for i, s := range r.API.Servers {
-		servers[i] = s
-	}
-	walk(servers)
+	walk(eval.ToExpressionSet(r.API.Servers))
 
 	// User types
 	types := make(eval.ExpressionSet, len(r.Types))
@@ -85,14 +80,10 @@ func (r *RootExpr) WalkSets(walk eval.SetWalker) {
 	walk(mtypes)
 
 	// Services
-	services := make(eval.ExpressionSet, len(r.Services))
-	var methods eval.ExpressionSet
-	for i, s := range r.Services {
-		services[i] = s
-	}
-	walk(services)
+	walk(eval.ToExpressionSet(r.Services))
 
 	// Methods (must be done after services)
+	var methods eval.ExpressionSet
 	for _, s := range r.Services {
 		for _, m := range s.Methods {
 			methods = append(methods, m)
@@ -146,6 +137,8 @@ func (r *RootExpr) Packages() []string {
 	return []string{
 		"goa.design/goa/v3/expr",
 		"goa.design/goa/v3/dsl",
+		fmt.Sprintf("goa.design/goa/v3@%s/expr", goa.Version()),
+		fmt.Sprintf("goa.design/goa/v3@%s/dsl", goa.Version()),
 	}
 }
 
@@ -241,6 +234,9 @@ func (r *RootExpr) Finalize() {
 	if len(r.API.Servers) == 0 {
 		r.API.Servers = []*ServerExpr{r.API.DefaultServer()}
 	}
+	for _, e := range r.Errors {
+		e.Finalize()
+	}
 	for _, s := range r.API.Servers {
 		s.Finalize()
 	}
@@ -279,4 +275,20 @@ func (m MetaExpr) Merge(src MetaExpr) {
 			m[k] = vals
 		}
 	}
+}
+
+// Last returns the last value for a specific key, if the key exists and has
+// values; otherwise returns an empty string, with the "ok" flag set to false.
+func (m MetaExpr) Last(key string) (string, bool) {
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+
+	l := len(v)
+	if l < 1 {
+		return "", false
+	}
+
+	return v[l-1], true
 }

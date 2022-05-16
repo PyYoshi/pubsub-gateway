@@ -2,9 +2,33 @@ package codegen
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"unicode"
+
+	"goa.design/goa/v3/expr"
+)
+
+type (
+	// InitArgData contains the data needed to render code to initialize struct
+	// fields with the given arguments.
+	InitArgData struct {
+		// Name is the argument name.
+		Name string
+		// Pointer if true indicates that the argument is a pointer.
+		Pointer bool
+		// Type is the argument type.
+		Type expr.DataType
+		// FieldName is the name of the field in the struct initialized by the
+		// argument.
+		FieldName string
+		// FieldPointer if true indicates that the field in the struct is a
+		// pointer.
+		FieldPointer bool
+		// FieldType is the type of the field in the struct.
+		FieldType expr.DataType
+	}
 )
 
 // TemplateFuncs lists common template helper functions.
@@ -17,7 +41,7 @@ func TemplateFuncs() map[string]interface{} {
 
 // CommandLine return the command used to run this process.
 func CommandLine() string {
-	cmdl := "$ goa"
+	cmdl := "goa"
 	for _, arg := range os.Args {
 		if strings.HasPrefix(arg, "--cmd=") {
 			cmdl = arg[6:]
@@ -121,10 +145,15 @@ func CamelCase(name string, firstUpper bool, acronym bool) string {
 		// [w,i] is a word.
 		word := string(runes[w:i])
 		// is it one of our initialisms?
-		if u := strings.ToUpper(word); acronym && commonInitialisms[u] {
-			if firstUpper {
-				u = strings.ToUpper(u)
-			} else if w == 0 {
+		if u := strings.ToUpper(word); commonInitialisms[u] {
+			switch {
+			case firstUpper && acronym:
+				// u is already in upper case. Nothing to do here.
+			case firstUpper && !acronym:
+				u = strings.Title(strings.ToLower(u))
+			case w > 0 && !acronym:
+				u = strings.Title(strings.ToLower(u))
+			case w == 0:
 				u = strings.ToLower(u)
 			}
 
@@ -148,34 +177,47 @@ func CamelCase(name string, firstUpper bool, acronym bool) string {
 }
 
 // SnakeCase produces the snake_case version of the given CamelCase string.
+// News    => news
+// OldNews => old_news
+// CNNNews => cnn_news
 func SnakeCase(name string) string {
+	// Special handling for single "words" starting with multiple upper case letters
 	for u, l := range toLower {
 		name = strings.Replace(name, u, l, -1)
 	}
+
+	// Remove leading and trailing blank spaces and replace any blank spaces in
+	// between with a single underscore
+	name = strings.Join(strings.Fields(name), "_")
+
+	// Special handling for dashes to convert them into underscores
+	name = strings.Replace(name, "-", "_", -1)
+
 	var b bytes.Buffer
-	var lastUnderscore bool
 	ln := len(name)
 	if ln == 0 {
 		return ""
 	}
-	b.WriteRune(unicode.ToLower(rune(name[0])))
+	n := rune(name[0])
+	b.WriteRune(unicode.ToLower(n))
+	lastLower, isLower, lastUnder, isUnder := false, true, false, false
 	for i := 1; i < ln; i++ {
 		r := rune(name[i])
-		nextIsLower := false
-		if i < ln-1 {
-			n := rune(name[i+1])
-			nextIsLower = unicode.IsLower(n) && unicode.IsLetter(n)
-		}
-		if unicode.IsUpper(r) {
-			if !lastUnderscore && nextIsLower {
+		isLower = unicode.IsLower(r) && unicode.IsLetter(r) || unicode.IsDigit(r)
+		isUnder = r == '_'
+		if !isLower && !isUnder {
+			if lastLower && !lastUnder {
 				b.WriteRune('_')
-				lastUnderscore = true
+			} else if ln > i+1 {
+				rn := rune(name[i+1])
+				if unicode.IsLower(rn) && rn != '_' && !lastUnder {
+					b.WriteRune('_')
+				}
 			}
-			b.WriteRune(unicode.ToLower(r))
-		} else {
-			b.WriteRune(r)
-			lastUnderscore = false
 		}
+		b.WriteRune(unicode.ToLower(r))
+		lastLower = isLower
+		lastUnder = isUnder
 	}
 	return b.String()
 }
@@ -216,6 +258,62 @@ func WrapText(text string, maxChars int) string {
 		}
 	}
 	return res[:len(res)-1]
+}
+
+// InitStructFields produces Go code to initialize a struct and its fields from
+// the given init arguments.
+func InitStructFields(args []*InitArgData, targetVar, sourcePkg, targetPkg string) (string, []*TransformFunctionData, error) {
+	scope := NewNameScope()
+	scope.Unique(targetVar)
+
+	var (
+		code    string
+		helpers []*TransformFunctionData
+	)
+	for _, arg := range args {
+		switch {
+		case arg.FieldName == "" && arg.FieldType == nil:
+		// do nothing
+		case expr.Equal(arg.Type, arg.FieldType):
+			// arg type and struct field type are the same. No need to call transform
+			// to initialize the field
+			deref := ""
+			if !arg.Pointer && arg.FieldPointer && expr.IsPrimitive(arg.FieldType) {
+				deref = "&"
+			}
+			code += fmt.Sprintf("%s.%s = %s%s\n", targetVar, arg.FieldName, deref, arg.Name)
+		case expr.IsPrimitive(arg.FieldType):
+			// aliased primitive type
+			t := scope.GoFullTypeRef(&expr.AttributeExpr{Type: arg.FieldType}, targetPkg)
+			cast := fmt.Sprintf("%s(%s)", t, arg.Name)
+			if arg.Pointer {
+				code += "if " + arg.Name + " != nil {\n"
+				cast = fmt.Sprintf("%s(*%s)", t, arg.Name)
+			}
+			if arg.FieldPointer {
+				code += fmt.Sprintf("tmp%s := %s\n%s.%s = &tmp%s\n", arg.Name, cast, targetVar, arg.FieldName, arg.Name)
+			} else if arg.FieldName != "" {
+				code += fmt.Sprintf("%s.%s = %s\n", targetVar, arg.FieldName, cast)
+			} else {
+				code += fmt.Sprintf("%s := %s\n", targetVar, cast)
+			}
+			if arg.Pointer {
+				code += "}\n"
+			}
+		default:
+			srcctx := NewAttributeContext(arg.Pointer, false, true, sourcePkg, scope)
+			tgtctx := NewAttributeContext(arg.FieldPointer, false, true, targetPkg, scope)
+			c, h, err := GoTransform(
+				&expr.AttributeExpr{Type: arg.Type}, &expr.AttributeExpr{Type: arg.FieldType},
+				arg.Name, fmt.Sprintf("%s.%s", targetVar, arg.FieldName), srcctx, tgtctx, "", false)
+			if err != nil {
+				return "", helpers, err
+			}
+			code += c + "\n"
+			helpers = AppendHelpers(helpers, h)
+		}
+	}
+	return code, helpers, nil
 }
 
 func runeSpacePosRev(r []rune) int {

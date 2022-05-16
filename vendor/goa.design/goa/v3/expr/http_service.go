@@ -27,6 +27,9 @@ type (
 		// Headers defines the HTTP request headers common to all the
 		// service endpoints.
 		Headers *MappedAttributeExpr
+		// Cookies defines the HTTP request cookies common to all the
+		// service endpoints.
+		Cookies *MappedAttributeExpr
 		// Name of parent service if any
 		ParentName string
 		// Endpoint with canonical service path
@@ -127,7 +130,12 @@ func (svc *HTTPServiceExpr) FullPaths() []string {
 			basePaths = []string{Root.API.HTTP.Path}
 		}
 		for _, base := range basePaths {
-			paths = append(paths, httppath.Clean(path.Join(base, p)))
+			v := httppath.Clean(path.Join(base, p))
+			// path has trailing slash
+			if strings.HasSuffix(p, "/") {
+				v += "/"
+			}
+			paths = append(paths, v)
 		}
 	}
 	return paths
@@ -163,6 +171,23 @@ func (svc *HTTPServiceExpr) EvalName() string {
 
 // Prepare initializes the error responses.
 func (svc *HTTPServiceExpr) Prepare() {
+	// Lookup undefined HTTP errors in API.
+	for _, err := range svc.ServiceExpr.Errors {
+		found := false
+		for _, herr := range svc.HTTPErrors {
+			if err.Name == herr.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, herr := range Root.API.HTTP.Errors {
+				if herr.Name == err.Name {
+					svc.HTTPErrors = append(svc.HTTPErrors, herr.Dup())
+				}
+			}
+		}
+	}
 	for _, er := range svc.HTTPErrors {
 		er.Response.Prepare()
 	}

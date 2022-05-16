@@ -2,6 +2,7 @@ package expr
 
 import (
 	"fmt"
+	"strings"
 
 	"goa.design/goa/v3/eval"
 )
@@ -32,6 +33,9 @@ type (
 		ZeroValue interface{}
 		// UserExample set in DSL or computed in Finalize
 		UserExamples []*ExampleExpr
+		// finalized is true if the attribute has been finalized - only
+		// applies if attribute type is an object
+		finalized bool
 	}
 
 	// ExampleExpr represents an example.
@@ -68,6 +72,10 @@ type (
 		// described at
 		// http://json-schema.org/latest/json-schema-validation.html#anchor33
 		Pattern string
+		// ExclusiveMinimum represents an exclusiveMinimum value validation as described
+		// at
+		// http://json-schema.org/draft/2019-09/json-schema-validation.html#rfc.section.6.2.5.
+		ExclusiveMinimum *float64
 		// Minimum represents an minimum value validation as described
 		// at
 		// http://json-schema.org/latest/json-schema-validation.html#anchor21.
@@ -75,6 +83,10 @@ type (
 		// Maximum represents a maximum value validation as described at
 		// http://json-schema.org/latest/json-schema-validation.html#anchor17.
 		Maximum *float64
+		// ExclusiveMaximum represents an exclusiveMaximum value validation as described
+		// at
+		// http://json-schema.org/draft/2019-09/json-schema-validation.html#rfc.section.6.2.3.
+		ExclusiveMaximum *float64
 		// MinLength represents an minimum length validation as
 		// described at
 		// http://json-schema.org/latest/json-schema-validation.html#anchor29.
@@ -159,18 +171,15 @@ func TaggedAttribute(a *AttributeExpr, tag string) string {
 		}
 	}
 	for _, b := range a.Bases {
-		if n := TaggedAttribute(&AttributeExpr{Type: b}, tag); n != "" {
+		at := &AttributeExpr{Type: b}
+		if ut, ok := b.(UserType); ok {
+			at = ut.Attribute()
+		}
+		if n := TaggedAttribute(at, tag); n != "" {
 			return n
 		}
 	}
 	return ""
-}
-
-// Prepare initializes the Meta expression.
-func (a *AttributeExpr) Prepare() {
-	if a.Meta == nil {
-		a.Meta = MetaExpr{}
-	}
 }
 
 // Validate tests whether the attribute required fields exist.  Since attributes
@@ -201,17 +210,24 @@ func (a *AttributeExpr) Validate(ctx string, parent eval.Expression) *eval.Valid
 			ctx = fmt.Sprintf("field %s", nat.Name)
 			verr.Merge(nat.Attribute.Validate(ctx, parent))
 		}
-	} else {
-		if ar := AsArray(a.Type); ar != nil {
-			elemType := ar.ElemType
-			verr.Merge(elemType.Validate(ctx, a))
+	} else if ar := AsArray(a.Type); ar != nil {
+		elemType := ar.ElemType
+		verr.Merge(elemType.Validate(ctx, a))
+	} else if u := AsUnion(a.Type); u != nil {
+		for _, ut := range u.Values {
+			verr.Merge(ut.Attribute.Validate(ctx, parent))
+			if IsArray(ut.Attribute.Type) {
+				verr.Add(parent, "union type %s has array elements, not supported by gRPC", u.Name())
+			} else if IsMap(ut.Attribute.Type) {
+				verr.Add(parent, "union type %s has map elements, not supported by gRPC", u.Name())
+			}
 		}
 	}
 
 	if views, ok := a.Meta["view"]; ok {
 		rt, ok := a.Type.(*ResultTypeExpr)
 		if !ok {
-			verr.Add(parent, "%sdefines a view %v but type %s is not a result type", ctx, views, a.Type.Name())
+			verr.Add(parent, "%s uses view %q but %q is not a result type", ctx, views[0], a.Type.Name())
 		}
 		if name := views[0]; name != "default" && rt != nil {
 			found := false
@@ -222,7 +238,7 @@ func (a *AttributeExpr) Validate(ctx string, parent eval.Expression) *eval.Valid
 				}
 			}
 			if !found {
-				verr.Add(parent, "%stype %s does not define view %q", ctx, a.Type.Name(), name)
+				verr.Add(parent, "%s: type %q does not define view %q", ctx, a.Type.Name(), name)
 			}
 		}
 	}
@@ -250,6 +266,14 @@ func (a *AttributeExpr) Finalize() {
 				continue
 			}
 			a.Merge(ru.Attribute())
+		}
+		if a.finalized {
+			// Avoid infinite recursion.
+			return
+		}
+		a.finalized = true
+		for _, nat := range *AsObject(a.Type) {
+			nat.Attribute.Finalize()
 		}
 	}
 }
@@ -385,6 +409,34 @@ func (a *AttributeExpr) HasTag(tag string) bool {
 	return false
 }
 
+// HasTagPrefix returns true if the attribute is an object that has an attribute with
+// the given tag prefix.
+func (a *AttributeExpr) HasTagPrefix(prefix string) bool {
+	if a == nil {
+		return false
+	}
+	obj := AsObject(a.Type)
+	if obj == nil {
+		return false
+	}
+	for _, at := range *obj {
+		for k := range at.Attribute.Meta {
+			if strings.HasPrefix(k, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// FieldTag returns the field tag if the attribute is a field.
+func (a *AttributeExpr) FieldTag() (tag string, found bool) {
+	if a == nil {
+		return
+	}
+	return a.Meta.Last("rpc:tag")
+}
+
 // HasDefaultValue returns true if the attribute with the given name has a
 // default value.
 func (a *AttributeExpr) HasDefaultValue(attName string) bool {
@@ -396,7 +448,13 @@ func (a *AttributeExpr) HasDefaultValue(attName string) bool {
 // exist or if the child attribute does not have a default value.
 func (a *AttributeExpr) GetDefault(attName string) interface{} {
 	if o := AsObject(a.Type); o != nil {
-		return o.Attribute(attName).DefaultValue
+		att := o.Attribute(attName)
+		if att.DefaultValue != nil {
+			return att.DefaultValue
+		}
+		if ut, ok := att.Type.(UserType); ok && !IsObject(ut) {
+			return ut.Attribute().DefaultValue
+		}
 	}
 	return nil
 }
@@ -438,6 +496,11 @@ func (a *AttributeExpr) Find(name string) *AttributeExpr {
 			return att
 		}
 	}
+	for _, ref := range a.References {
+		if att := findAttrFn(ref); att != nil {
+			return att
+		}
+	}
 	return nil
 }
 
@@ -460,29 +523,110 @@ func (a *AttributeExpr) Delete(name string) {
 	}
 }
 
+// AddMeta adds values to the meta field of the attribute.
+func (a *AttributeExpr) AddMeta(name string, vals ...string) {
+	if a.Meta == nil {
+		a.Meta = make(MetaExpr)
+	}
+	a.Meta[name] = append(a.Meta[name], vals...)
+}
+
+// ExtractUserExamples return the examples defined in the design directly on the
+// attribute or on its type.
+func (a *AttributeExpr) ExtractUserExamples() []*ExampleExpr {
+	if len(a.UserExamples) > 0 {
+		return a.UserExamples
+	}
+	ut, ok := a.Type.(UserType)
+	if !ok {
+		return nil
+	}
+	return ut.Attribute().ExtractUserExamples()
+}
+
 // Debug dumps the attribute to STDOUT in a goa developer friendly way.
 func (a *AttributeExpr) Debug(prefix string) { a.debug(prefix, make(map[*AttributeExpr]int), 0) }
 func (a *AttributeExpr) debug(prefix string, seen map[*AttributeExpr]int, indent int) {
-	for i := 0; i < indent; i++ {
-		prefix = "  " + prefix
+	tab := "    "
+	tabs := strings.Repeat(tab, indent)
+	prefix = tabs + prefix
+	if IsObject(a.Type) {
+		// avoid infinite recursion
+		if c, ok := seen[a]; ok && c > 1 {
+			fmt.Printf("%s: ...\n", prefix)
+			return
+		}
+		seen[a]++
 	}
-	if c, ok := seen[a]; ok && c > 1 {
-		fmt.Printf("%s: ...\n", prefix)
-		return
+	n := a.Type.Name()
+	if desc := a.Description; desc != "" {
+		fmt.Printf("%s: %s (%s) <%T>\n", prefix, n, desc, a.Type)
+	} else {
+		fmt.Printf("%s: %s <%T>\n", prefix, n, a.Type)
 	}
-	seen[a]++
-	fmt.Printf("%s: %q\n", prefix, a.Type.Name())
 	if o := AsObject(a.Type); o != nil {
-		for _, att := range *o {
-			att.Attribute.debug(" - "+att.Name, seen, indent+1)
+		for _, nat := range *o {
+			nat.Attribute.debug("- "+nat.Name, seen, indent+1)
 		}
 	}
 	if a := AsArray(a.Type); a != nil {
-		a.ElemType.debug(" Elem", seen, indent+2)
+		a.ElemType.debug("elem", seen, indent+1)
 	}
 	if m := AsMap(a.Type); m != nil {
-		m.KeyType.debug(" Key", seen, indent+2)
-		m.ElemType.debug(" Elem", seen, indent+2)
+		m.KeyType.debug("key", seen, indent+1)
+		m.ElemType.debug("elem", seen, indent+1)
+	}
+	if u := AsUnion(a.Type); u != nil {
+		for _, nat := range u.Values {
+			nat.Attribute.debug("* "+nat.Name, seen, indent+1)
+		}
+	}
+	if rt, ok := a.Type.(*ResultTypeExpr); ok {
+		fmt.Printf("%s%sviews\n", tabs, tab)
+		for _, v := range rt.Views {
+			nats := *AsObject(v.AttributeExpr.Type)
+			keys := make([]string, len(nats))
+			for i, n := range nats {
+				keys[i] = n.Name
+			}
+			fmt.Printf("%s%s- %s: %v\n", tabs+tab, tab, v.Name, keys)
+		}
+	}
+	if d := a.DefaultValue; d != nil {
+		fmt.Printf("%s%sdefault\n", tabs, tab)
+		fmt.Printf("%s%s%#v\n", tabs+tab, tab, a.DefaultValue)
+	}
+	if len(a.UserExamples) > 0 {
+		fmt.Printf("%s%sexamples\n", tabs, tab)
+		for _, ex := range a.UserExamples {
+			fmt.Printf("%s%s- %s: %#v\n", tabs+tab, tab, ex.Summary, ex.Value)
+		}
+	}
+	if len(a.Meta) > 0 {
+		fmt.Printf("%s%smeta\n", tabs, tab)
+		for k, v := range a.Meta {
+			fmt.Printf("%s%s- %s: %s\n", tabs+tab, tab, k, strings.Join(v, ", "))
+		}
+	}
+	if v := a.Validation; v != nil {
+		v.Debug("", tabs+tab, tab)
+	}
+	if t, ok := a.Type.(UserType); ok {
+		if v := t.Attribute().Validation; v != nil {
+			v.Debug("user type ", tabs+tab, tab)
+		}
+	}
+	if len(a.Bases) > 0 {
+		fmt.Printf("%s%sbases\n", tabs, tab)
+		for _, b := range a.Bases {
+			fmt.Printf("%s%s- %s\n", tabs+tab, tab, b.Name())
+		}
+	}
+	if len(a.References) > 0 {
+		fmt.Printf("%s%sreferences\n", tabs, tab)
+		for _, r := range a.References {
+			fmt.Printf("%s%s- %s\n", tabs+tab, tab, r.Name())
+		}
 	}
 }
 
@@ -539,8 +683,10 @@ func (a *AttributeExpr) inheritRecursive(parent *AttributeExpr, seen map[*Attrib
 				for _, nat := range *AsObject(att.Type) {
 					child := nat.Attribute
 					parent := AsObject(patt.Type).Attribute(nat.Name)
-					child.inheritValidations(parent)
-					child.inheritRecursive(parent, seen)
+					if parent != nil {
+						child.inheritValidations(parent)
+						child.inheritRecursive(parent, seen)
+					}
 				}
 			}
 		}
@@ -578,8 +724,14 @@ func (v *ValidationExpr) Merge(other *ValidationExpr) {
 	if v.Pattern == "" {
 		v.Pattern = other.Pattern
 	}
+	if v.ExclusiveMinimum == nil || (other.ExclusiveMinimum != nil && *v.ExclusiveMinimum > *other.ExclusiveMinimum) {
+		v.ExclusiveMinimum = other.ExclusiveMinimum
+	}
 	if v.Minimum == nil || (other.Minimum != nil && *v.Minimum > *other.Minimum) {
 		v.Minimum = other.Minimum
+	}
+	if v.ExclusiveMaximum == nil || (other.ExclusiveMaximum != nil && *v.ExclusiveMaximum > *other.ExclusiveMaximum) {
+		v.ExclusiveMaximum = other.ExclusiveMaximum
 	}
 	if v.Maximum == nil || (other.Maximum != nil && *v.Maximum < *other.Maximum) {
 		v.Maximum = other.Maximum
@@ -628,7 +780,12 @@ func (v *ValidationExpr) HasRequiredOnly() bool {
 	if v.Format != "" || v.Pattern != "" {
 		return false
 	}
-	if (v.Minimum != nil) || (v.Maximum != nil) || (v.MinLength != nil) || (v.MaxLength != nil) {
+	if (v.ExclusiveMinimum != nil) ||
+		(v.Minimum != nil) ||
+		(v.ExclusiveMaximum != nil) ||
+		(v.Maximum != nil) ||
+		(v.MinLength != nil) ||
+		(v.MaxLength != nil) {
 		return false
 	}
 	return true
@@ -642,14 +799,54 @@ func (v *ValidationExpr) Dup() *ValidationExpr {
 		copy(req, v.Required)
 	}
 	return &ValidationExpr{
-		Values:    v.Values,
-		Format:    v.Format,
-		Pattern:   v.Pattern,
-		Minimum:   v.Minimum,
-		Maximum:   v.Maximum,
-		MinLength: v.MinLength,
-		MaxLength: v.MaxLength,
-		Required:  req,
+		Values:           v.Values,
+		Format:           v.Format,
+		Pattern:          v.Pattern,
+		ExclusiveMinimum: v.ExclusiveMinimum,
+		Minimum:          v.Minimum,
+		ExclusiveMaximum: v.ExclusiveMaximum,
+		Maximum:          v.Maximum,
+		MinLength:        v.MinLength,
+		MaxLength:        v.MaxLength,
+		Required:         req,
+	}
+}
+
+// Debug dumps the validation to STDOUT in a goa developer friendly way.
+func (v *ValidationExpr) Debug(title, prefix, indent string) {
+	if v.HasRequiredOnly() && len(v.Required) == 0 {
+		return
+	}
+	fmt.Printf("%s%svalidations\n", prefix, title)
+	if len(v.Values) > 0 {
+		fmt.Printf("%s%s- enum: %s\n", prefix, indent, fmt.Sprintf("%v", v.Values))
+	}
+	if v.Format != "" {
+		fmt.Printf("%s%s- format: %s\n", prefix, indent, v.Format)
+	}
+	if v.Pattern != "" {
+		fmt.Printf("%s%s- pattern: %s\n", prefix, indent, v.Pattern)
+	}
+	if v.ExclusiveMinimum != nil {
+		fmt.Printf("%s%s- exclMin: %v\n", prefix, indent, *v.ExclusiveMinimum)
+	}
+	if v.Minimum != nil {
+		fmt.Printf("%s%s- min: %v\n", prefix, indent, *v.Minimum)
+	}
+	if v.ExclusiveMaximum != nil {
+		fmt.Printf("%s%s- exclMax: %v\n", prefix, indent, *v.ExclusiveMaximum)
+	}
+	if v.Maximum != nil {
+		fmt.Printf("%s%s- max: %v\n", prefix, indent, *v.Maximum)
+	}
+	if v.MinLength != nil {
+		fmt.Printf("%s%s- minLength: %v\n", prefix, indent, *v.MinLength)
+	}
+	if v.MaxLength != nil {
+		fmt.Printf("%s%s- maxLength: %v\n", prefix, indent, *v.MaxLength)
+	}
+	if len(v.Required) > 0 {
+		fmt.Printf("%s%s- required: %v\n", prefix, indent, v.Required)
 	}
 }
 

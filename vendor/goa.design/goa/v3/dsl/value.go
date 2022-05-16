@@ -1,7 +1,12 @@
 package dsl
 
-import "goa.design/goa/v3/expr"
-import "goa.design/goa/v3/eval"
+import (
+	"goa.design/goa/v3/eval"
+	"goa.design/goa/v3/expr"
+)
+
+// Val is an alias for expr.Val.
+type Val expr.Val
 
 // Value sets the example value.
 //

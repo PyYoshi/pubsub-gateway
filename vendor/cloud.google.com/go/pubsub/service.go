@@ -15,46 +15,25 @@
 package pubsub
 
 import (
-	"fmt"
 	"math"
 	"strings"
 	"time"
 
 	gax "github.com/googleapis/gax-go/v2"
-	pb "google.golang.org/genproto/googleapis/pubsub/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// maxPayload is the maximum number of bytes to devote to actual ids in
-// acknowledgement or modifyAckDeadline requests. A serialized
-// AcknowledgeRequest proto has a small constant overhead, plus the size of the
-// subscription name, plus 3 bytes per ID (a tag byte and two size bytes). A
-// ModifyAckDeadlineRequest has an additional few bytes for the deadline. We
-// don't know the subscription name here, so we just assume the size exclusive
-// of ids is 100 bytes.
+// maxPayload is the maximum number of bytes to devote to the
+// encoded AcknowledgementRequest / ModifyAckDeadline proto message.
 //
 // With gRPC there is no way for the client to know the server's max message size (it is
 // configurable on the server). We know from experience that it
 // it 512K.
 const (
 	maxPayload       = 512 * 1024
-	reqFixedOverhead = 100
-	overheadPerID    = 3
 	maxSendRecvBytes = 20 * 1024 * 1024 // 20M
 )
-
-func convertMessages(rms []*pb.ReceivedMessage) ([]*Message, error) {
-	msgs := make([]*Message, 0, len(rms))
-	for i, m := range rms {
-		msg, err := toMessage(m)
-		if err != nil {
-			return nil, fmt.Errorf("pubsub: cannot decode the retrieved message at index: %d, message: %+v", i, m)
-		}
-		msgs = append(msgs, msg)
-	}
-	return msgs, nil
-}
 
 func trunc32(i int64) int32 {
 	if i > math.MaxInt32 {
@@ -68,7 +47,7 @@ type defaultRetryer struct {
 }
 
 // Logic originally from
-// https://github.com/GoogleCloudPlatform/google-cloud-java/blob/master/google-cloud-clients/google-cloud-pubsub/src/main/java/com/google/cloud/pubsub/v1/StatusUtil.java
+// https://github.com/googleapis/java-pubsub/blob/main/google-cloud-pubsub/src/main/java/com/google/cloud/pubsub/v1/StatusUtil.java
 func (r *defaultRetryer) Retry(err error) (pause time.Duration, shouldRetry bool) {
 	s, ok := status.FromError(err)
 	if !ok { // includes io.EOF, normal stream close, which causes us to reopen
@@ -80,6 +59,13 @@ func (r *defaultRetryer) Retry(err error) (pause time.Duration, shouldRetry bool
 	case codes.Unavailable:
 		c := strings.Contains(s.Message(), "Server shutdownNow invoked")
 		if !c {
+			return r.bo.Pause(), true
+		}
+		return 0, false
+	case codes.Unknown:
+		// Retry GOAWAY, see https://github.com/googleapis/google-cloud-go/issues/4257.
+		isGoaway := strings.Contains(s.Message(), "received prior goaway: code: NO_ERROR")
+		if isGoaway {
 			return r.bo.Pause(), true
 		}
 		return 0, false
@@ -104,4 +90,19 @@ func (r *streamingPullRetryer) Retry(err error) (pause time.Duration, shouldRetr
 	default:
 		return r.defaultRetryer.Retry(err)
 	}
+}
+
+type publishRetryer struct {
+	defaultRetryer gax.Retryer
+}
+
+func (r *publishRetryer) Retry(err error) (pause time.Duration, shouldRetry bool) {
+	s, ok := status.FromError(err)
+	if !ok {
+		return r.defaultRetryer.Retry(err)
+	}
+	if s.Code() == codes.Internal && strings.Contains(s.Message(), "string field contains invalid UTF-8") {
+		return 0, false
+	}
+	return r.defaultRetryer.Retry(err)
 }

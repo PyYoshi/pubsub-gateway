@@ -53,26 +53,26 @@ func (s *NameScope) HashedUnique(key Hasher, name string, suffix ...string) stri
 // name if given name is not unique. If suffixed name is still not unique, a
 // counter value is added to the suffixed name until unique.
 func (s *NameScope) Unique(name string, suffix ...string) string {
-	var (
-		i   int
-		suf string
-	)
-	_, ok := s.counts[name]
+	c, ok := s.counts[name]
 	if !ok {
-		goto done
+		s.counts[name]++
+		return name
 	}
 	if len(suffix) > 0 {
-		suf = suffix[0]
+		name += suffix[0]
+		c, ok = s.counts[name]
+		if !ok {
+			s.counts[name]++
+			return name
+		}
 	}
-	name += suf
-	i, ok = s.counts[name]
-	if !ok {
-		goto done
+	for i := c; ; i++ {
+		ret := name + strconv.Itoa(i+1)
+		if _, ok := s.counts[ret]; !ok {
+			s.counts[ret]++
+			return ret
+		}
 	}
-	name += strconv.Itoa(i + 1)
-done:
-	s.counts[name] = i + 1
-	return name
 }
 
 // Name returns a unique name for the given name by adding a counter value to
@@ -96,31 +96,36 @@ func (s *NameScope) Name(name string) string {
 // useDefault if true indicates that the attribute must not be a pointer
 // if it has a default value.
 func (s *NameScope) GoTypeDef(att *expr.AttributeExpr, ptr, useDefault bool) string {
+	return s.goTypeDef(att, ptr, useDefault, "")
+}
+
+func (s *NameScope) goTypeDef(att *expr.AttributeExpr, ptr, useDefault bool, pkg string) string {
 	switch actual := att.Type.(type) {
 	case expr.Primitive:
-		if t, _ := getMetaTypeInfo(att); t != "" {
+		if t, _ := GetMetaType(att); t != "" {
 			return t
 		}
 		return GoNativeTypeName(actual)
 	case *expr.Array:
-		d := s.GoTypeDef(actual.ElemType, ptr, useDefault)
+		d := s.goTypeDef(actual.ElemType, ptr, useDefault, pkg)
 		if expr.IsObject(actual.ElemType.Type) {
 			d = "*" + d
 		}
 		return "[]" + d
 	case *expr.Map:
-		keyDef := s.GoTypeDef(actual.KeyType, ptr, useDefault)
+		keyDef := s.goTypeDef(actual.KeyType, ptr, useDefault, pkg)
 		if expr.IsObject(actual.KeyType.Type) {
 			keyDef = "*" + keyDef
 		}
-		elemDef := s.GoTypeDef(actual.ElemType, ptr, useDefault)
+		elemDef := s.goTypeDef(actual.ElemType, ptr, useDefault, pkg)
 		if expr.IsObject(actual.ElemType.Type) {
 			elemDef = "*" + elemDef
 		}
 		return fmt.Sprintf("map[%s]%s", keyDef, elemDef)
+	case *expr.Union:
+		return fmt.Sprintf("interface{\n\t%s()\n}", UnionValTypeName(actual.TypeName))
 	case *expr.Object:
-		var ss []string
-		ss = append(ss, "struct {")
+		ss := []string{"struct {"}
 		for _, nat := range *actual {
 			var (
 				fn   string
@@ -133,7 +138,13 @@ func (s *NameScope) GoTypeDef(att *expr.AttributeExpr, ptr, useDefault bool) str
 			)
 			{
 				fn = GoifyAtt(at, name, true)
-				tdef = s.GoTypeDef(at, ptr, useDefault)
+				var parentPkg string
+				if ut, ok := at.Type.(expr.UserType); ok {
+					if UserTypeLocation(ut) != nil {
+						parentPkg = UserTypeLocation(ut).PackageName()
+					}
+				}
+				tdef = s.goTypeDef(at, ptr, useDefault, parentPkg)
 				if expr.IsObject(at.Type) ||
 					att.IsPrimitivePointer(name, useDefault) ||
 					(ptr && expr.IsPrimitive(at.Type) && at.Type.Kind() != expr.AnyKind && at.Type.Kind() != expr.BytesKind) {
@@ -149,7 +160,14 @@ func (s *NameScope) GoTypeDef(att *expr.AttributeExpr, ptr, useDefault bool) str
 		ss = append(ss, "}")
 		return strings.Join(ss, "\n")
 	case expr.UserType:
-		return s.GoTypeName(att)
+		if actual == expr.Empty {
+			return "struct {}"
+		}
+		var prefix string
+		if loc := UserTypeLocation(actual); loc != nil && loc.PackageName() != pkg {
+			prefix = loc.PackageName() + "."
+		}
+		return prefix + s.GoTypeName(att)
 	default:
 		panic(fmt.Sprintf("unknown data type %T", actual)) // bug
 	}
@@ -172,6 +190,16 @@ func (s *NameScope) GoTypeRef(att *expr.AttributeExpr) string {
 	return goTypeRef(name, att.Type)
 }
 
+// GoTypeRefWithDefaults returns the Go code that refers to the Go type which
+// matches the given attribute type. The result of this function differs from
+// GoTypeRef when the attribute type is an object (note: not a user type) and
+// the reference is thus an inline struct definition. In this case accounting
+// for default values may cause child attributes to use non-pointer fields.
+func (s *NameScope) GoTypeRefWithDefaults(att *expr.AttributeExpr) string {
+	name := s.GoTypeNameWithDefaults(att)
+	return goTypeRef(name, att.Type)
+}
+
 // GoFullTypeRef returns the Go code that refers to the Go type which matches
 // the given attribute type defined in the given package if a user type.
 func (s *NameScope) GoFullTypeRef(att *expr.AttributeExpr, pkg string) string {
@@ -184,12 +212,24 @@ func (s *NameScope) GoTypeName(att *expr.AttributeExpr) string {
 	return s.GoFullTypeName(att, "")
 }
 
+// GoTypeNameWithDefaults returns the Go type name of the given attribute type.
+// The result of this function differs from GoTypeName when the attribute type
+// is an object (note: not a user type) and the name is thus an inline struct
+// definition. In this case accounting for default values may cause child
+// attributes to use non-pointer fields.
+func (s *NameScope) GoTypeNameWithDefaults(att *expr.AttributeExpr) string {
+	if _, ok := att.Type.(*expr.Object); ok {
+		return s.GoTypeDef(att, false, true)
+	}
+	return s.GoTypeName(att)
+}
+
 // GoFullTypeName returns the Go type name of the given data type qualified with
 // the given package name if applicable and if not the empty string.
 func (s *NameScope) GoFullTypeName(att *expr.AttributeExpr, pkg string) string {
 	switch actual := att.Type.(type) {
 	case expr.Primitive:
-		if t, _ := getMetaTypeInfo(att); t != "" {
+		if t, _ := GetMetaType(att); t != "" {
 			return t
 		}
 		return GoNativeTypeName(actual)
@@ -201,7 +241,7 @@ func (s *NameScope) GoFullTypeName(att *expr.AttributeExpr, pkg string) string {
 			s.GoFullTypeRef(actual.ElemType, pkg))
 	case *expr.Object:
 		return s.GoTypeDef(att, false, false)
-	case expr.UserType:
+	case expr.UserType, *expr.Union:
 		if actual == expr.ErrorResult {
 			return "goa.ServiceError"
 		}
@@ -230,6 +270,9 @@ func isRawStruct(dt expr.DataType) bool {
 		return true
 	}
 	if expr.IsObject(dt) {
+		return false
+	}
+	if expr.IsUnion(dt) {
 		return false
 	}
 	return true

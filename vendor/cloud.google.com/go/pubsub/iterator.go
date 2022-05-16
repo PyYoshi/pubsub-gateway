@@ -17,6 +17,7 @@ package pubsub
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Between message receipt and ack (that is, the time spent processing a message) we want to extend the message
@@ -73,7 +75,13 @@ type messageIterator struct {
 func newMessageIterator(subc *vkit.SubscriberClient, subName string, po *pullOptions) *messageIterator {
 	var ps *pullStream
 	if !po.synchronous {
-		ps = newPullStream(context.Background(), subc.StreamingPull, subName)
+		maxMessages := po.maxOutstandingMessages
+		maxBytes := po.maxOutstandingBytes
+		if po.useLegacyFlowControl {
+			maxMessages = 0
+			maxBytes = 0
+		}
+		ps = newPullStream(context.Background(), subc.StreamingPull, subName, maxMessages, maxBytes, po.maxExtensionPeriod)
 	}
 	// The period will update each tick based on the distribution of acks. We'll start by arbitrarily sending
 	// the first keepAlive halfway towards the minimum ack deadline.
@@ -84,6 +92,7 @@ func newMessageIterator(subc *vkit.SubscriberClient, subName string, po *pullOpt
 	nackTicker := time.NewTicker(100 * time.Millisecond)
 	pingTicker := time.NewTicker(30 * time.Second)
 	cctx, cancel := context.WithCancel(context.Background())
+	cctx = withSubscriptionKey(cctx, subName)
 	it := &messageIterator{
 		ctx:                cctx,
 		cancel:             cancel,
@@ -196,7 +205,9 @@ func (it *messageIterator) receive(maxToPull int32) ([]*Message, error) {
 	if err != nil {
 		return nil, it.fail(err)
 	}
-	msgs, err := convertMessages(rmsgs)
+	recordStat(it.ctx, PullCount, int64(len(rmsgs)))
+	now := time.Now()
+	msgs, err := convertMessages(rmsgs, now, it.done)
 	if err != nil {
 		return nil, it.fail(err)
 	}
@@ -205,16 +216,14 @@ func (it *messageIterator) receive(maxToPull int32) ([]*Message, error) {
 	maxExt := time.Now().Add(it.po.maxExtension)
 	ackIDs := map[string]bool{}
 	it.mu.Lock()
-	now := time.Now()
 	for _, m := range msgs {
-		m.receiveTime = now
-		addRecv(m.ID, m.ackID, now)
-		m.doneFunc = it.done
-		it.keepAliveDeadlines[m.ackID] = maxExt
+		ackID := msgAckID(m)
+		addRecv(m.ID, ackID, now)
+		it.keepAliveDeadlines[ackID] = maxExt
 		// Don't change the mod-ack if the message is going to be nacked. This is
 		// possible if there are retries.
-		if !it.pendingNacks[m.ackID] {
-			ackIDs[m.ackID] = true
+		if !it.pendingNacks[ackID] {
+			ackIDs[ackID] = true
 		}
 	}
 	deadline := it.ackDeadline()
@@ -238,6 +247,8 @@ func (it *messageIterator) pullMessages(maxToPull int32) ([]*pb.ReceivedMessage,
 	}, gax.WithGRPCOptions(grpc.MaxCallRecvMsgSize(maxSendRecvBytes)))
 	switch {
 	case err == context.Canceled:
+		return nil, nil
+	case status.Code(err) == codes.Canceled:
 		return nil, nil
 	case err != nil:
 		return nil, err
@@ -313,7 +324,7 @@ func (it *messageIterator) sender() {
 		case <-it.pingTicker.C:
 			it.mu.Lock()
 			// Ping only if we are processing messages via streaming.
-			sendPing = !it.po.synchronous && (len(it.keepAliveDeadlines) > 0)
+			sendPing = !it.po.synchronous
 		}
 		// Lock is held here.
 		var acks, nacks, modAcks map[string]bool
@@ -375,15 +386,46 @@ func (it *messageIterator) handleKeepAlives() {
 }
 
 func (it *messageIterator) sendAck(m map[string]bool) bool {
-	return it.sendAckIDRPC(m, func(ids []string) error {
+	// Account for the Subscription field.
+	overhead := calcFieldSizeString(it.subName)
+	return it.sendAckIDRPC(m, maxPayload-overhead, func(ids []string) error {
 		recordStat(it.ctx, AckCount, int64(len(ids)))
 		addAcks(ids)
-		// Use context.Background() as the call's context, not it.ctx. We don't
-		// want to cancel this RPC when the iterator is stopped.
-		return it.subc.Acknowledge(context.Background(), &pb.AcknowledgeRequest{
-			Subscription: it.subName,
-			AckIds:       ids,
-		})
+		bo := gax.Backoff{
+			Initial:    100 * time.Millisecond,
+			Max:        time.Second,
+			Multiplier: 2,
+		}
+		cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		for {
+			// Use context.Background() as the call's context, not it.ctx. We don't
+			// want to cancel this RPC when the iterator is stopped.
+			cctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel2()
+			err := it.subc.Acknowledge(cctx2, &pb.AcknowledgeRequest{
+				Subscription: it.subName,
+				AckIds:       ids,
+			})
+			// Retry DeadlineExceeded errors a few times before giving up and
+			// allowing the message to expire and be redelivered.
+			// The underlying library handles other retries, currently only
+			// codes.Unavailable.
+			switch status.Code(err) {
+			case codes.DeadlineExceeded:
+				// Use the outer context with timeout here. Errors from gax, including
+				// context deadline exceeded should be transparent, as unacked messages
+				// will be redelivered.
+				if err := gax.Sleep(cctx, bo.Pause()); err != nil {
+					return nil
+				}
+			default:
+				// TODO(b/226593754): by default, errors should not be fatal unless exactly once is enabled
+				// since acks are "fire and forget". Once EOS feature is out, retry these errors
+				// if exactly-once is enabled, which can be determined from StreamingPull response.
+				return nil
+			}
+		}
 	})
 }
 
@@ -392,13 +434,16 @@ func (it *messageIterator) sendAck(m map[string]bool) bool {
 // percentile in order to capture the highest amount of time necessary without
 // considering 1% outliers.
 func (it *messageIterator) sendModAck(m map[string]bool, deadline time.Duration) bool {
-	return it.sendAckIDRPC(m, func(ids []string) error {
+	deadlineSec := int32(deadline / time.Second)
+	// Account for the Subscription and AckDeadlineSeconds fields.
+	overhead := calcFieldSizeString(it.subName) + calcFieldSizeInt(int(deadlineSec))
+	return it.sendAckIDRPC(m, maxPayload-overhead, func(ids []string) error {
 		if deadline == 0 {
 			recordStat(it.ctx, NackCount, int64(len(ids)))
 		} else {
 			recordStat(it.ctx, ModAckCount, int64(len(ids)))
 		}
-		addModAcks(ids, int32(deadline/time.Second))
+		addModAcks(ids, deadlineSec)
 		// Retry this RPC on Unavailable for a short amount of time, then give up
 		// without returning a fatal error. The utility of this RPC is by nature
 		// transient (since the deadline is relative to the current time) and it
@@ -414,7 +459,7 @@ func (it *messageIterator) sendModAck(m map[string]bool, deadline time.Duration)
 		for {
 			err := it.subc.ModifyAckDeadline(cctx, &pb.ModifyAckDeadlineRequest{
 				Subscription:       it.subName,
-				AckDeadlineSeconds: int32(deadline / time.Second),
+				AckDeadlineSeconds: deadlineSec,
 				AckIds:             ids,
 			})
 			switch status.Code(err) {
@@ -429,21 +474,30 @@ func (it *messageIterator) sendModAck(m map[string]bool, deadline time.Duration)
 				recordStat(it.ctx, ModAckTimeoutCount, 1)
 				return nil
 			default:
-				// Any other error is fatal.
-				return err
+				// This addresses an error where `context deadline exceeded` errors
+				// not captured by the previous case causes fatal errors.
+				// See https://github.com/googleapis/google-cloud-go/issues/3060
+				if err != nil && strings.Contains(err.Error(), "context deadline exceeded") {
+					recordStat(it.ctx, ModAckTimeoutCount, 1)
+					return nil
+				}
+				// TODO(b/226593754): by default, errors should not be fatal unless exactly once is enabled
+				// since modacks are "fire and forget". Once EOS feature is out, retry these errors
+				// if exactly-once is enabled, which can be determined from StreamingPull response.
+				return nil
 			}
 		}
 	})
 }
 
-func (it *messageIterator) sendAckIDRPC(ackIDSet map[string]bool, call func([]string) error) bool {
+func (it *messageIterator) sendAckIDRPC(ackIDSet map[string]bool, maxSize int, call func([]string) error) bool {
 	ackIDs := make([]string, 0, len(ackIDSet))
 	for k := range ackIDSet {
 		ackIDs = append(ackIDs, k)
 	}
 	var toSend []string
 	for len(ackIDs) > 0 {
-		toSend, ackIDs = splitRequestIDs(ackIDs, maxPayload)
+		toSend, ackIDs = splitRequestIDs(ackIDs, maxSize)
 		if err := call(toSend); err != nil {
 			// The underlying client handles retries, so any error is fatal to the
 			// iterator.
@@ -465,11 +519,35 @@ func (it *messageIterator) pingStream() {
 	_ = it.ps.Send(&pb.StreamingPullRequest{})
 }
 
+// calcFieldSizeString returns the number of bytes string fields
+// will take up in an encoded proto message.
+func calcFieldSizeString(fields ...string) int {
+	overhead := 0
+	for _, field := range fields {
+		overhead += 1 + len(field) + protowire.SizeVarint(uint64(len(field)))
+	}
+	return overhead
+}
+
+// calcFieldSizeInt returns the number of bytes int fields
+// will take up in an encoded proto message.
+func calcFieldSizeInt(fields ...int) int {
+	overhead := 0
+	for _, field := range fields {
+		overhead += 1 + protowire.SizeVarint(uint64(field))
+	}
+	return overhead
+}
+
+// splitRequestIDs takes a slice of ackIDs and returns two slices such that the first
+// ackID slice can be used in a request where the payload does not exceed maxSize.
 func splitRequestIDs(ids []string, maxSize int) (prefix, remainder []string) {
-	size := reqFixedOverhead
+	size := 0
 	i := 0
+	// TODO(hongalex): Use binary search to find split index, since ackIDs are
+	// fairly constant.
 	for size < maxSize && i < len(ids) {
-		size += overheadPerID + len(ids[i])
+		size += calcFieldSizeString(ids[i])
 		i++
 	}
 	if size > maxSize {
@@ -487,6 +565,9 @@ func splitRequestIDs(ids []string, maxSize int) (prefix, remainder []string) {
 func (it *messageIterator) ackDeadline() time.Duration {
 	pt := time.Duration(it.ackTimeDist.Percentile(.99)) * time.Second
 
+	if it.po.maxExtensionPeriod > 0 && pt > it.po.maxExtensionPeriod {
+		return it.po.maxExtensionPeriod
+	}
 	if pt > maxAckDeadline {
 		return maxAckDeadline
 	}

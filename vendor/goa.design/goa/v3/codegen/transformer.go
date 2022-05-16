@@ -11,13 +11,14 @@ type (
 	// generation.
 	Attributor interface {
 		Scoper
-		// Name generates a valid name for the given attribute type.
-		Name(att *expr.AttributeExpr, pkg string) string
+		// Name generates a valid name for the given attribute type. ptr and
+		// useDefault are used to generate inline struct type definitions.
+		Name(att *expr.AttributeExpr, pkg string, ptr, useDefault bool) string
 		// Ref generates a valid reference to the given attribute type.
 		Ref(att *expr.AttributeExpr, pkg string) string
 		// Field generates a valid data structure field identifier for the given
-		// attribute and field name. If firstUpper is true the field name's first
-		// letter is capitalized.
+		// attribute and field name. If firstUpper is true then the field name
+		// first letter is capitalized.
 		Field(att *expr.AttributeExpr, name string, firstUpper bool) string
 	}
 
@@ -89,17 +90,22 @@ func NewAttributeContext(pointer, reqIgnore, useDefault bool, pkg string, scope 
 		IgnoreRequired: reqIgnore,
 		UseDefault:     useDefault,
 		Pkg:            pkg,
-		Scope:          &AttributeScope{scope: scope},
+		Scope:          NewAttributeScope(scope),
 	}
 }
 
+// NewAttributeScope initializes an attribute scope.
+func NewAttributeScope(scope *NameScope) *AttributeScope {
+	return &AttributeScope{scope: scope}
+}
+
 // IsCompatible returns an error if a and b are not both objects, both arrays,
-// both maps or both the same primitive type. actx and bctx are used to build
-// the error message if any.
+// both maps, both unions or one union and one object.  actx and bctx are used
+// to build the error message if any.
 func IsCompatible(a, b expr.DataType, actx, bctx string) error {
 	switch {
 	case expr.IsObject(a):
-		if !expr.IsObject(b) {
+		if !expr.IsObject(b) && !expr.IsUnion(b) {
 			return fmt.Errorf("%s is an object but %s type is %s", actx, bctx, b.Name())
 		}
 	case expr.IsArray(a):
@@ -110,8 +116,21 @@ func IsCompatible(a, b expr.DataType, actx, bctx string) error {
 		if !expr.IsMap(b) {
 			return fmt.Errorf("%s is a hash but %s type is %s", actx, bctx, b.Name())
 		}
+	case expr.IsUnion(a):
+		if !expr.IsUnion(b) && !expr.IsObject(b) {
+			return fmt.Errorf("%s is a union but %s type is %s", actx, bctx, b.Name())
+		}
 	default:
-		if a.Kind() != b.Kind() {
+		aUT, isAUT := a.(expr.UserType)
+		bUT, isBUT := b.(expr.UserType)
+		switch {
+		case isAUT && isBUT:
+			return IsCompatible(aUT.Attribute().Type, bUT.Attribute().Type, actx, bctx)
+		case isAUT:
+			return IsCompatible(aUT.Attribute().Type, b, actx, bctx)
+		case isBUT:
+			return IsCompatible(a, bUT.Attribute().Type, actx, bctx)
+		case a.Kind() != b.Kind():
 			return fmt.Errorf("%s is a %s but %s type is %s", actx, a.Name(), bctx, b.Name())
 		}
 	}
@@ -181,7 +200,7 @@ func mapDepth(dt expr.DataType, depth int, seen ...map[string]struct{}) int {
 // IsPrimitivePointer returns true if the attribute with the given name is a
 // primitive pointer in the given parent attribute.
 func (a *AttributeContext) IsPrimitivePointer(name string, att *expr.AttributeExpr) bool {
-	if at := att.Find(name); at != nil && at.Type == expr.Any || at.Type == expr.Bytes {
+	if at := att.Find(name); at != nil && (at.Type == expr.Any || at.Type == expr.Bytes) {
 		return false
 	}
 	if a.Pointer {
@@ -209,12 +228,20 @@ func (a *AttributeContext) Dup() *AttributeContext {
 		Pointer:        a.Pointer,
 		IgnoreRequired: a.IgnoreRequired,
 		UseDefault:     a.UseDefault,
+		Pkg:            a.Pkg,
 		Scope:          a.Scope,
 	}
 }
 
 // Name returns the type name for the given attribute.
-func (a *AttributeScope) Name(att *expr.AttributeExpr, pkg string) string {
+func (a *AttributeScope) Name(att *expr.AttributeExpr, pkg string, ptr, useDefault bool) string {
+	if _, ok := att.Type.(expr.UserType); !ok && expr.IsObject(att.Type) {
+		// In the special case of anonymous / inline struct types the "name" is
+		// in fact the struct typedef. In this case we need to force the
+		// generation of the fields as pointers if needed as the default
+		// GoTransform algorithm does not allow for an override.
+		return a.scope.GoTypeDef(att, ptr, useDefault)
+	}
 	return a.scope.GoFullTypeName(att, pkg)
 }
 

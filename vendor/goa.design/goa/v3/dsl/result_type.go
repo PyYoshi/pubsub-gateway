@@ -15,9 +15,9 @@ var resultTypeCount int
 
 // ResultType defines a result type used to describe a method response.
 //
-// Result types have a unique identifier as described in RFC 6838. The
-// identifier defines the default value for the Content-Type header of HTTP
-// responses.
+// Result types have a unique identifier as described in RFC 6838. Result types
+// may also define a type name used to override the default Go type name
+// generated from the identifier.
 //
 // The result type expression includes a listing of all the response attributes.
 // Views specify which of the attributes are actually rendered so that the same
@@ -28,17 +28,19 @@ var resultTypeCount int
 // is not explicitly described in the DSL then one is created that lists all the
 // result type attributes.
 //
+// Note: it is not required to use a ResultType to describe the type of a method
+// result, Type can also be used and is preferred if there is no need to define
+// multiple views.
+//
 // ResultType is a top level DSL.
 //
-// ResultType accepts two arguments: the result type identifier and the defining
-// DSL.
+// ResultType accepts two or three arguments: the result type identifier, an
+// optional type name and the defining DSL.
 //
 // Example:
 //
-//    var BottleMT = ResultType("application/vnd.goa.example.bottle", func() {
+//    var BottleMT = ResultType("application/vnd.goa.example.bottle", "BottleResult", func() {
 //        Description("A bottle of wine")
-//        TypeName("BottleResult")         // Override generated type name
-//        ContentType("application/json") // Override Content-Type header
 //
 //        Attributes(func() {
 //            Attribute("id", Int, "ID of bottle")
@@ -61,20 +63,46 @@ var resultTypeCount int
 //        })
 //     })
 //
-func ResultType(identifier string, fn func()) *expr.ResultTypeExpr {
+func ResultType(identifier string, args ...interface{}) *expr.ResultTypeExpr {
 	if _, ok := eval.Current().(eval.TopExpr); !ok {
 		eval.IncompatibleDSL()
 		return nil
 	}
 
-	// Validate Result Type
-	identifier, params, err := mime.ParseMediaType(identifier)
-	if err != nil {
-		eval.ReportError("invalid result type identifier %#v: %s",
-			identifier, err)
-		// We don't return so that other errors may be captured in this
-		// one run.
-		identifier = "text/plain"
+	var (
+		typeName string
+		fn       func()
+	)
+	{
+		var err error
+		identifier, typeName, err = mediaTypeToResultType(identifier)
+		if err != nil {
+			eval.ReportError("invalid result type identifier %#v: %s", identifier, err)
+			// We don't return so that other errors may be captured
+		}
+		if len(args) > 0 {
+			switch a := args[0].(type) {
+			case func():
+				fn = a
+			case string:
+				typeName = a
+			default:
+				eval.InvalidArgError("function or string", args[0])
+			}
+			if len(args) > 1 {
+				if fn != nil {
+					eval.ReportError("DSL function must be last argument")
+				}
+				if f, ok := args[1].(func()); ok {
+					fn = f
+				} else {
+					eval.InvalidArgError("function", args[1])
+				}
+				if len(args) > 2 {
+					eval.ReportError("too many arguments")
+				}
+			}
+		}
 	}
 	canonicalID := expr.CanonicalIdentifier(identifier)
 	// Validate that result type identifier doesn't clash
@@ -85,26 +113,6 @@ func ResultType(identifier string, fn func()) *expr.ResultTypeExpr {
 				identifier, canonicalID)
 			return nil
 		}
-	}
-	identifier = mime.FormatMediaType(identifier, params)
-	lastPart := identifier
-	lastPartIndex := strings.LastIndex(identifier, "/")
-	if lastPartIndex > -1 {
-		lastPart = identifier[lastPartIndex+1:]
-	}
-	plusIndex := strings.Index(lastPart, "+")
-	if plusIndex > 0 {
-		lastPart = lastPart[:plusIndex]
-	}
-	lastPart = strings.TrimPrefix(lastPart, "vnd.")
-	elems := strings.Split(lastPart, ".")
-	for i, e := range elems {
-		elems[i] = strings.Title(e)
-	}
-	typeName := strings.Join(elems, "")
-	if typeName == "" {
-		resultTypeCount++
-		typeName = fmt.Sprintf("ResultType%d", resultTypeCount)
 	}
 	// Now save the type in the API result types map
 	mt := expr.NewResultTypeExpr(typeName, identifier, fn)
@@ -125,28 +133,39 @@ func TypeName(name string) {
 	case expr.UserType:
 		e.Rename(name)
 	case *expr.AttributeExpr:
-		if e.Meta == nil {
-			e.Meta = make(expr.MetaExpr)
-		}
-		e.Meta["struct:type:name"] = []string{name}
+		e.AddMeta("struct:type:name", name)
 	default:
 		eval.IncompatibleDSL()
 	}
 }
 
-// View adds a new view to a result type. A view has a name and lists attributes
-// that are rendered when the view is used to produce a response. The attribute
-// names must appear in the result type expression. If an attribute is itself a
-// result type then the view may specify which view to use when rendering the
-// attribute using the View function in the View DSL. If not specified then the
-// view named "default" is used.
+// View has two usages:
 //
-// View must appear in a ResultType expression.
+// - when used inside a ResultType DSL function it defines a view for the result
+// type. A view lists a subset of the result type attributes that are used when
+// marshalling responses.
 //
-// View accepts two arguments: the view name and its defining DSL.
+// - when used inside a Result DSL function it defines the view used to marshal
+// the result type returned by the method.
+//
+// Note that the view used to render a response can also be set dynamically by
+// the method code in which case the result function should not specify a view
+// in the design.  The attribute names listed in a view must be identical to
+// existing attributes in the result type on which the view is defined. If an
+// attribute is itself a result type then the view may specify which view to use
+// when marshaling the attribute using the View function recursively, see
+// example below. All result types must have a view called "default" which is
+// the view used to marshal results when no specific view is specified.
+//
+// View must appear in a ResultType or a Result expression.
+//
+// View accepts two arguments for the first usage: the view name and its
+// defining DSL.  View accepts a single argument for the second usage: the view
+// name used to render the result.
 //
 // Examples:
 //
+//    // MyResultType defines 2 views.
 //    var MyResultType = ResultType("application/vnd.goa.my", func() {
 //        Attributes(func() {
 //            Attribute("id", String)
@@ -170,12 +189,13 @@ func TypeName(name string) {
 //        })
 //    })
 //
-//    Result(MyResultType, func() {
-//        View("extended")
-//    })
-//
-//    Result(CollectionOf(MyResultType), func() {
-//        View("default")
+//    // MyMethod uses the extended view of MyResultType to marshal the
+//    // response.
+//    var _ = Service("MyService", func() {
+//        Method("MyMethod", func() {
+//            Result(MyResultType, func() { View("extended") })
+//            GRPC(func() {})
+//        })
 //    })
 //
 func View(name string, adsl ...func()) {
@@ -215,10 +235,7 @@ func View(name string, adsl ...func()) {
 		}
 
 	case *expr.AttributeExpr:
-		if e.Meta == nil {
-			e.Meta = make(map[string][]string)
-		}
-		e.Meta["view"] = []string{name}
+		e.AddMeta("view", name)
 
 	default:
 		eval.IncompatibleDSL()
@@ -261,15 +278,44 @@ func View(name string, adsl ...func()) {
 //         View("tiny")  // use "tiny" view to render the collection elements
 //     })
 //
+//     var MultiResultsExample = CollectionOf(DivisionResult, func() {
+//         Attributes(func() {
+//             Example("DivisionResult Collection Examples", func() {
+//                 Value([]Val{
+//                     {
+//                         "value":    4.167,
+//                         "reminder": 0,
+//                     },
+//                     {
+//                         "value":    3.0,
+//                         "reminder": 0,
+//                     },
+//                 })
+//             })
+//         })
+//     })
+//
 func CollectionOf(v interface{}, adsl ...func()) *expr.ResultTypeExpr {
 	var m *expr.ResultTypeExpr
 	var ok bool
 	m, ok = v.(*expr.ResultTypeExpr)
 	if !ok {
 		if id, ok := v.(string); ok {
-			if dt := expr.Root.UserType(expr.CanonicalIdentifier(id)); dt != nil {
+			// Check if a result type exists with the given type name
+			if dt := expr.Root.UserType(id); dt != nil {
 				if mt, ok := dt.(*expr.ResultTypeExpr); ok {
 					m = mt
+				}
+			} else {
+				// Check if a result type exists with the given identifier
+				id, typeName, err := mediaTypeToResultType(id)
+				if dt := expr.Root.UserType(typeName); dt != nil {
+					if mt, ok := dt.(*expr.ResultTypeExpr); ok {
+						m = mt
+					}
+				}
+				if err != nil {
+					eval.ReportError("invalid result type identifier %#v in CollectionOf: %s", id, err)
 				}
 			}
 		}
@@ -429,11 +475,43 @@ func Attributes(fn func()) {
 		eval.IncompatibleDSL()
 		return
 	}
-	eval.Execute(fn, mt)
+	eval.Execute(fn, mt.AttributeExpr)
+}
+
+// mediaTypeToResultType returns the formatted identifier and the result type
+// name from the given identifier string. If the given identifier is invalid it
+// returns text/plain as the identifier and an error.
+func mediaTypeToResultType(identifier string) (string, string, error) {
+	identifier, params, err := mime.ParseMediaType(identifier)
+	if err != nil {
+		identifier = "text/plain"
+	}
+	identifier = mime.FormatMediaType(identifier, params)
+	lastPart := identifier
+	lastPartIndex := strings.LastIndex(identifier, "/")
+	if lastPartIndex > -1 {
+		lastPart = identifier[lastPartIndex+1:]
+	}
+	plusIndex := strings.Index(lastPart, "+")
+	if plusIndex > 0 {
+		lastPart = lastPart[:plusIndex]
+	}
+	lastPart = strings.TrimPrefix(lastPart, "vnd.")
+	elems := strings.Split(lastPart, ".")
+	for i, e := range elems {
+		elems[i] = strings.Title(e)
+	}
+	typeName := strings.Join(elems, "")
+	if typeName == "" {
+		resultTypeCount++
+		typeName = fmt.Sprintf("ResultType%d", resultTypeCount)
+	}
+	return identifier, typeName, err
 }
 
 // buildView builds a view expression given an attribute and a corresponding
-// result type.
+// result type. The attribute must be an object listing the child attributes
+// that make up the view.
 func buildView(name string, mt *expr.ResultTypeExpr, at *expr.AttributeExpr) (*expr.ViewExpr, error) {
 	if at.Type == nil {
 		return nil, fmt.Errorf("invalid view DSL")
@@ -447,11 +525,8 @@ func buildView(name string, mt *expr.ResultTypeExpr, at *expr.AttributeExpr) (*e
 		cat := nat.Attribute
 		if existing := mt.Find(n); existing != nil {
 			dup := expr.DupAtt(existing)
-			if dup.Meta == nil {
-				dup.Meta = make(map[string][]string)
-			}
-			if len(cat.Meta["view"]) > 0 {
-				dup.Meta["view"] = cat.Meta["view"]
+			if _, ok := cat.Meta["view"]; ok {
+				dup.AddMeta("view", cat.Meta["view"]...)
 			}
 			o.Set(n, dup)
 		} else if n != "links" {

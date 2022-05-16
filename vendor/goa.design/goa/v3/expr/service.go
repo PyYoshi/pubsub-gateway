@@ -103,19 +103,22 @@ func (e *ErrorExpr) Validate() error {
 	walkAttribute(e.AttributeExpr, func(name string, att *AttributeExpr) error {
 		if _, ok := att.Meta["struct:error:name"]; ok {
 			if errField != "" {
-				verr.Add(e, "attribute %q has 'struct:error:name' meta which is already set for attribute %q in %q type", name, errField, e.AttributeExpr.Type.Name())
+				verr.Add(e, "duplicate error names in type %q", e.AttributeExpr.Type.Name())
 			}
 			errField = name
 			if att.Type != String {
-				verr.Add(e, "attribute %q with 'struct:error:name' in the meta must be a string in %q type", name, e.AttributeExpr.Type.Name())
+				verr.Add(e, "error name %q must be a string in type %q", name, e.AttributeExpr.Type.Name())
 			}
 			if !e.AttributeExpr.IsRequired(name) {
-				verr.Add(e, "attribute %q with 'struct:error:name' in the meta must be required in %q type", name, e.AttributeExpr.Type.Name())
+				verr.Add(e, "error name %q must be required in type %q", name, e.AttributeExpr.Type.Name())
 			}
 		}
 		return nil
 	})
-	return verr
+	if len(verr.Errors) > 0 {
+		return verr
+	}
+	return nil
 }
 
 // Finalize makes sure the error type is a user type since it has to generate a
@@ -128,16 +131,18 @@ func (e *ErrorExpr) Finalize() {
 		if dt != ErrorResult {
 			// If this type contains an attribute with "struct:error:name" meta
 			// then no need to do anything.
-			for _, nat := range *AsObject(dt) {
-				if _, ok := nat.Attribute.Meta["struct:error:name"]; ok {
-					return
+			if IsObject(dt) {
+				for _, nat := range *AsObject(dt) {
+					if _, ok := nat.Attribute.Meta["struct:error:name"]; ok {
+						return
+					}
 				}
 			}
 
 			// This type does not have an attribute with "struct:error:name" meta.
 			// It means the type is used by at most one error (otherwise validations
 			// would have failed).
-			dt.Attribute().Meta["struct:error:name"] = []string{e.Name}
+			dt.Attribute().AddMeta("struct:error:name", e.Name)
 		}
 	default:
 		ut := &UserTypeExpr{

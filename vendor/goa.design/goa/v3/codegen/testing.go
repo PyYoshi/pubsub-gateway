@@ -17,6 +17,7 @@ import (
 
 // RunDSL returns the DSL root resulting from running the given DSL.
 func RunDSL(t *testing.T, dsl func()) *expr.RootExpr {
+	t.Helper()
 	eval.Reset()
 	expr.Root = new(expr.RootExpr)
 	expr.Root.GeneratedTypes = &expr.GeneratedRoot{}
@@ -24,27 +25,6 @@ func RunDSL(t *testing.T, dsl func()) *expr.RootExpr {
 	eval.Register(expr.Root.GeneratedTypes)
 	expr.Root.API = expr.NewAPIExpr("test api", func() {})
 	expr.Root.API.Servers = []*expr.ServerExpr{expr.Root.API.DefaultServer()}
-	if !eval.Execute(dsl, nil) {
-		t.Fatal(eval.Context.Error())
-	}
-	if err := eval.RunDSL(); err != nil {
-		t.Fatal(err)
-	}
-	return expr.Root
-}
-
-// RunDSLWithFunc returns the DSL root resulting from running the given DSL.
-// It executes a function to add any top-level types to the design Root before
-// running the DSL.
-func RunDSLWithFunc(t *testing.T, dsl func(), fn func()) *expr.RootExpr {
-	eval.Reset()
-	expr.Root = new(expr.RootExpr)
-	expr.Root.GeneratedTypes = &expr.GeneratedRoot{}
-	eval.Register(expr.Root)
-	eval.Register(expr.Root.GeneratedTypes)
-	expr.Root.API = expr.NewAPIExpr("test api", func() {})
-	expr.Root.API.Servers = []*expr.ServerExpr{expr.Root.API.DefaultServer()}
-	fn()
 	if !eval.Execute(dsl, nil) {
 		t.Fatal(eval.Context.Error())
 	}
@@ -70,6 +50,7 @@ func SectionsCode(t *testing.T, sections []*SectionTemplate) string {
 
 // SectionCodeFromImportsAndMethods generates and formats the code for given import and method definition sections.
 func SectionCodeFromImportsAndMethods(t *testing.T, importSection *SectionTemplate, methodSection *SectionTemplate) string {
+	t.Helper()
 	var code bytes.Buffer
 	if err := importSection.Write(&code); err != nil {
 		t.Fatal(err)
@@ -96,6 +77,7 @@ func sectionCodeWithPrefix(t *testing.T, section *SectionTemplate, prefix string
 // FormatTestCode formats the given Go code. The code must correspond to the
 // content of a valid Go source file (i.e. start with "package")
 func FormatTestCode(t *testing.T, code string) string {
+	t.Helper()
 	tmp := CreateTempFile(t, code)
 	defer os.Remove(tmp)
 	if err := finalizeGoSource(tmp); err != nil {
@@ -130,6 +112,7 @@ func Diff(t *testing.T, s1, s2 string) string {
 // CreateTempFile creates a temporary file and writes the given content.
 // It is used only for testing.
 func CreateTempFile(t *testing.T, content string) string {
+	t.Helper()
 	f, err := ioutil.TempFile("", "")
 	if err != nil {
 		t.Fatal(err)

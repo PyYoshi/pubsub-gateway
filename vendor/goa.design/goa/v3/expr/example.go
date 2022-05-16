@@ -18,12 +18,21 @@ const (
 // isn't such a value then Example computes a random value for the attribute
 // using the given random value producer.
 func (a *AttributeExpr) Example(r *Random) interface{} {
-	if l := len(a.UserExamples); l > 0 {
+	if ex := a.ExtractUserExamples(); len(ex) > 0 {
 		// Return the last item in the slice so that examples can be overridden
 		// in the DSL. Overridden examples are always appended to the UserExamples
 		// slice.
-		return a.UserExamples[l-1].Value
+		return ex[len(ex)-1].Value
 	}
+
+	value, ok := a.Meta.Last("openapi:example")
+	if !ok {
+		value, ok = a.Meta.Last("swagger:example")
+	}
+	if ok && value == "false" {
+		return nil
+	}
+
 	// randomize array length first, since that's from higher level
 	if hasLengthValidation(a) {
 		return byLength(a, r)
@@ -127,7 +136,10 @@ func hasMinMaxValidation(a *AttributeExpr) bool {
 	if a.Validation == nil {
 		return false
 	}
-	return a.Validation.Minimum != nil || a.Validation.Maximum != nil
+	return a.Validation.ExclusiveMinimum != nil ||
+		a.Validation.Minimum != nil ||
+		a.Validation.ExclusiveMaximum != nil ||
+		a.Validation.Maximum != nil
 }
 
 // byLength generates a random size array of examples based on what's given.
@@ -193,6 +205,14 @@ func byFormat(a *AttributeExpr, r *Random) interface{} {
 		FormatCIDR:    "192.168.100.14/24",
 		FormatRegexp:  r.faker.Characters(3) + ".*",
 		FormatRFC1123: time.Unix(int64(r.Int())%1454957045, 0).UTC().Format(time.RFC1123), // to obtain a "fixed" rand
+		FormatUUID: func() string {
+			res, err := regen.Generate(`[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}`)
+			if err != nil {
+				return "12345678-1234-1234-12324-123456789ABC"
+			}
+			return res
+		}(),
+		FormatJSON: `{"name":"example","email":"mail@example.com"}`,
 	}[format]; ok {
 		return res
 	}
@@ -219,18 +239,18 @@ func byMinMax(a *AttributeExpr, r *Random) interface{} {
 		return nil
 	}
 	var (
-		i    = a.Type.Kind() == IntKind || a.Type.Kind() == UIntKind
-		i32  = a.Type.Kind() == Int32Kind || a.Type.Kind() == UInt32Kind
-		i64  = a.Type.Kind() == Int64Kind || a.Type.Kind() == UInt64Kind
-		f32  = a.Type.Kind() == Float32Kind
 		min  = math.Inf(-1)
 		max  = math.Inf(1)
 		sign = 1
 	)
-	if a.Validation.Maximum != nil {
+	if a.Validation.ExclusiveMaximum != nil {
+		max = *a.Validation.ExclusiveMaximum
+	} else if a.Validation.Maximum != nil {
 		max = *a.Validation.Maximum
 	}
-	if a.Validation.Minimum != nil {
+	if a.Validation.ExclusiveMinimum != nil {
+		min = *a.Validation.ExclusiveMinimum
+	} else if a.Validation.Minimum != nil {
 		min = *a.Validation.Minimum
 	} else {
 		sign = -1
@@ -239,14 +259,20 @@ func byMinMax(a *AttributeExpr, r *Random) interface{} {
 	}
 
 	if math.IsInf(max, 1) {
-		switch {
-		case i:
+		switch a.Type.Kind() {
+		case IntKind:
 			return sign * (r.Int() + int(min))
-		case i32:
+		case Int32Kind:
 			return int32(sign) * (r.Int32() + int32(min))
-		case i64:
+		case Int64Kind:
 			return int64(sign) * (r.Int64() + int64(min))
-		case f32:
+		case UIntKind:
+			return r.UInt() + uint(min)
+		case UInt32Kind:
+			return r.UInt32() + uint32(min)
+		case UInt64Kind:
+			return r.UInt64() + uint64(min)
+		case Float32Kind:
 			return float32(sign) * (r.Float32() + float32(min))
 		default:
 			return float64(sign) * (r.Float64() + min)
@@ -254,27 +280,39 @@ func byMinMax(a *AttributeExpr, r *Random) interface{} {
 	}
 	if min < max {
 		delta := max - min
-		switch {
-		case i:
+		switch a.Type.Kind() {
+		case IntKind:
 			return r.Int()%int(delta) + int(min)
-		case i32:
+		case Int32Kind:
 			return r.Int32()%int32(delta) + int32(min)
-		case i64:
+		case Int64Kind:
 			return r.Int64()%int64(delta) + int64(min)
-		case f32:
+		case UIntKind:
+			return r.UInt()%uint(delta) + uint(min)
+		case UInt32Kind:
+			return r.UInt32()%uint32(delta) + uint32(min)
+		case UInt64Kind:
+			return r.UInt64()%uint64(delta) + uint64(min)
+		case Float32Kind:
 			return r.Float32()*float32(delta) + float32(min)
 		default:
 			return r.Float64()*delta + min
 		}
 	}
-	switch {
-	case i:
+	switch a.Type.Kind() {
+	case IntKind:
 		return int(min)
-	case i32:
+	case Int32Kind:
 		return int32(min)
-	case i64:
+	case Int64Kind:
 		return int64(min)
-	case f32:
+	case UIntKind:
+		return uint(min)
+	case UInt32Kind:
+		return uint32(min)
+	case UInt64Kind:
+		return uint64(min)
+	case Float32Kind:
 		return float32(min)
 	default:
 		return min
@@ -300,14 +338,28 @@ func checkMinMaxValue(a *AttributeExpr, example interface{}) bool {
 	if !hasMinMaxValidation(a) {
 		return true
 	}
-	if min := a.Validation.Minimum; min != nil {
+	var min *float64
+	if a.Validation.ExclusiveMinimum != nil {
+		min = a.Validation.ExclusiveMinimum
+	}
+	if a.Validation.Minimum != nil {
+		min = a.Validation.Minimum
+	}
+	if min != nil {
 		if v, ok := example.(int); ok && float64(v) < *min {
 			return false
 		} else if v, ok := example.(float64); ok && v < *min {
 			return false
 		}
 	}
-	if max := a.Validation.Maximum; max != nil {
+	var max *float64
+	if a.Validation.ExclusiveMaximum != nil {
+		max = a.Validation.ExclusiveMaximum
+	}
+	if a.Validation.Maximum != nil {
+		max = a.Validation.Maximum
+	}
+	if max != nil {
 		if v, ok := example.(int); ok && float64(v) > *max {
 			return false
 		} else if v, ok := example.(float64); ok && v > *max {

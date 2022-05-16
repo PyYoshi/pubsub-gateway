@@ -1,10 +1,12 @@
 package http
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 
-	"github.com/dimfeld/httptreemux"
+	"github.com/dimfeld/httptreemux/v5"
 )
 
 type (
@@ -61,6 +63,12 @@ type (
 func NewMuxer() Muxer {
 	r := httptreemux.NewContextMux()
 	r.EscapeAddedRoutes = true
+	r.NotFoundHandler = func(w http.ResponseWriter, req *http.Request) {
+		ctx := context.WithValue(req.Context(), AcceptTypeKey, req.Header.Get("Accept"))
+		enc := ResponseEncoder(ctx, w)
+		w.WriteHeader(http.StatusNotFound)
+		enc.Encode(NewErrorResponse(fmt.Errorf("404 page not found")))
+	}
 	return &mux{r}
 }
 

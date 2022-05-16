@@ -85,28 +85,58 @@ func (e *GRPCEndpointExpr) Prepare() {
 	}
 	e.Response.Prepare()
 
-	// Inherit error only if it doesn't already exist in the endpoint errors
-	inherit := func(r *GRPCErrorExpr) {
-		found := false
-		for _, er := range e.GRPCErrors {
-			if er.Name == r.Name {
+	// Error -> ResponseError
+	methodErrors := map[string]struct{}{}
+	for _, v := range e.GRPCErrors {
+		methodErrors[v.Name] = struct{}{}
+	}
+	for _, me := range e.MethodExpr.Errors {
+		if _, ok := methodErrors[me.Name]; ok {
+			continue
+		}
+		methodErrors[me.Name] = struct{}{}
+		var found bool
+		for _, v := range e.Service.GRPCErrors {
+			if me.Name == v.Name {
+				e.GRPCErrors = append(e.GRPCErrors, v.Dup())
 				found = true
 				break
 			}
 		}
-		if !found {
-			e.GRPCErrors = append(e.GRPCErrors, r.Dup())
+		if found {
+			continue
+		}
+		// Lookup undefined GRPC errors in API.
+		for _, v := range Root.API.GRPC.Errors {
+			if me.Name == v.Name {
+				e.GRPCErrors = append(e.GRPCErrors, v.Dup())
+			}
 		}
 	}
-	// Inherit gRPC errors from service and root
-	for _, r := range e.Service.GRPCErrors {
-		inherit(r)
-	}
-	for _, r := range Root.API.GRPC.Errors {
-		inherit(r)
+	// Inherit GRPC errors from service if the error has not added.
+	for _, se := range e.Service.ServiceExpr.Errors {
+		if _, ok := methodErrors[se.Name]; ok {
+			continue
+		}
+		var found bool
+		for _, resp := range e.Service.GRPCErrors {
+			if se.Name == resp.Name {
+				found = true
+				e.GRPCErrors = append(e.GRPCErrors, resp.Dup())
+				break
+			}
+		}
+		if !found {
+			for _, ae := range Root.API.GRPC.Errors {
+				if se.Name == ae.Name {
+					e.GRPCErrors = append(e.GRPCErrors, ae.Dup())
+					break
+				}
+			}
+		}
 	}
 
-	// Prepare error response
+	// Prepare responses
 	for _, er := range e.GRPCErrors {
 		er.Response.Prepare()
 	}
@@ -182,7 +212,7 @@ func (e *GRPCEndpointExpr) Validate() error {
 				msgFields = pobj
 			}
 			if len(*msgFields) > 0 {
-				validateRPCTags(msgFields, e)
+				verr.Merge(validateRPCTags(msgFields, e))
 			}
 		}
 	} else {
@@ -318,7 +348,21 @@ func (e *GRPCEndpointExpr) Finalize() {
 
 	// Finalize streaming payload type if defined
 	if e.MethodExpr.StreamingPayload.Type != Empty {
-		initAttrFromDesign(e.StreamingRequest, e.MethodExpr.StreamingPayload)
+		attr := e.MethodExpr.StreamingPayload
+		// If streaming payload is a user type, use the underlying attribute
+		// for the grpc streaming request type. This ensures we are consistent
+		// with how message types are finalized for code generation.
+		if ut, ok := attr.Type.(UserType); ok {
+			attr = ut.Attribute()
+		}
+		initAttrFromDesign(e.StreamingRequest, attr)
+		if msgObj := AsObject(e.StreamingRequest.Type); msgObj != nil {
+			for _, nat := range *msgObj {
+				if e.MethodExpr.StreamingPayload.IsRequired(nat.Name) {
+					e.StreamingRequest.Validation.AddRequired(nat.Name)
+				}
+			}
+		}
 	}
 
 	// Finalize response
@@ -357,12 +401,12 @@ func validateMessage(msgAtt, serviceAtt *AttributeExpr, e *GRPCEndpointExpr, req
 		msgKind = "Request"
 		serviceKind = "Payload"
 	}
-	if serviceAtt.Type == Empty {
+	if isEmpty(serviceAtt) {
 		verr.Add(e, "%s message is defined but %s is not defined in method", msgKind, serviceKind)
 		return verr
 	}
 
-	if srvcObj := AsObject(serviceAtt.Type); srvcObj == nil {
+	if !IsObject(serviceAtt.Type) {
 		// service type (payload or result) is a primitive, array, or map
 		// The message type must have at most one field and that field must be
 		// of the same type as the service type.
@@ -383,19 +427,12 @@ func validateMessage(msgAtt, serviceAtt *AttributeExpr, e *GRPCEndpointExpr, req
 		// same name as the message attributes so that we can validate the
 		// rpc:tag in the meta.
 		msgFields := &Object{}
-		var found bool
 		for _, nat := range *AsObject(msgAtt.Type) {
-			found = false
-			for _, snat := range *srvcObj {
-				if nat.Name == snat.Name {
-					msgFields.Set(snat.Name, snat.Attribute)
-					found = true
-					break
-				}
+			if a := serviceAtt.Find(nat.Name); a != nil {
+				msgFields.Set(nat.Name, a)
+				break
 			}
-			if !found {
-				verr.Add(e, "%s message attribute %q is not found in %s", msgKind, nat.Name, serviceKind)
-			}
+			verr.Add(e, "%s message attribute %q is not found in %s", msgKind, nat.Name, serviceKind)
 		}
 		// validate rpc:tag in meta for the message fields
 		verr.Merge(validateRPCTags(msgFields, e))
@@ -409,12 +446,15 @@ func validateRPCTags(fields *Object, e *GRPCEndpointExpr) *eval.ValidationErrors
 	verr := new(eval.ValidationErrors)
 	foundRPC := make(map[string]string)
 	for _, nat := range *fields {
-		if tag, ok := nat.Attribute.Meta["rpc:tag"]; !ok {
-			verr.Add(e, "attribute %q does not have \"rpc:tag\" defined in the meta", nat.Name)
-		} else if a, ok := foundRPC[tag[0]]; ok {
-			verr.Add(e, "field number %s in attribute %q already exists for attribute %q", tag[0], nat.Name, a)
+		if IsUnion(nat.Attribute.Type) {
+			continue
+		}
+		if tag, ok := nat.Attribute.FieldTag(); !ok {
+			verr.Add(e, "attribute %q does not have \"rpc:tag\" defined in the meta, use \"Field\" to define the attribute of a type used in a gRPC method", nat.Name)
+		} else if a, ok := foundRPC[tag]; ok {
+			verr.Add(e, "field number %s in attribute %q already exists for attribute %q", tag, nat.Name, a)
 		} else {
-			foundRPC[tag[0]] = nat.Name
+			foundRPC[tag] = nat.Name
 		}
 	}
 	return verr
@@ -437,23 +477,15 @@ func validateMetadata(metAtt *MappedAttributeExpr, serviceAtt *AttributeExpr, e 
 		metKind = "Request"
 		serviceKind = "Payload"
 	}
-	if serviceAtt.Type == Empty {
+	if isEmpty(serviceAtt) {
 		verr.Add(e, "%s metadata is defined but %s is not defined in method", metKind, serviceKind)
 		return verr
 	}
-	if svcObj := AsObject(serviceAtt.Type); svcObj != nil {
+	if IsObject(serviceAtt.Type) {
 		// service type is an object type. Ensure the attributes defined in
 		// the metadata are found in the service type.
-		var found bool
 		for _, nat := range *AsObject(metAtt.Type) {
-			found = false
-			for _, tnat := range *svcObj {
-				if nat.Name == tnat.Name {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if a := serviceAtt.Find(nat.Name); a == nil {
 				verr.Add(e, "%s metadata attribute %q is not found in %s", metKind, nat.Name, serviceKind)
 			}
 		}

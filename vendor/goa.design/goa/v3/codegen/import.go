@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 
 	"goa.design/goa/v3/expr"
@@ -21,6 +22,15 @@ type (
 		Name string
 		// Go import path of package.
 		Path string
+	}
+
+	// Location defines a file location and import details.
+	Location struct {
+		// FilePath is the path to the file.
+		FilePath string
+		// RelImportPath is the Go import path starting after the gen
+		// folder.
+		RelImportPath string
 	}
 )
 
@@ -64,12 +74,36 @@ func (s *ImportSpec) Code() string {
 	return fmt.Sprintf(`"%s"`, s.Path)
 }
 
-// getMetaTypeInfo gets type and import info from an attribute's metadata. struct:field:type can have 3 arguments,
-// first being the go type name, second being import path,
-// and third being the name of a qualified import, in case of name collisions.
-func getMetaTypeInfo(att *expr.AttributeExpr) (typeName string, importS *ImportSpec) {
+// UserTypeLocation returns the location of the user type if set via the
+// attr:pkg:path metadata, nil otherwise..
+func UserTypeLocation(dt expr.DataType) *Location {
+	ut, ok := dt.(expr.UserType)
+	if !ok {
+		return nil
+	}
+	p, ok := ut.Attribute().Meta.Last("struct:pkg:path")
+	if !ok || p == "" {
+		return nil
+	}
+	return &Location{
+		FilePath:      filepath.Join(filepath.FromSlash(p), SnakeCase(ut.Name())+".go"),
+		RelImportPath: p,
+	}
+}
+
+// PackageName returns the package name of the given location.
+func (loc *Location) PackageName() string {
+	if loc == nil {
+		return ""
+	}
+	return Goify(filepath.Base(loc.RelImportPath), false)
+}
+
+// GetMetaType retrieves the type and package defined by the struct:field:type
+// metadata if any.
+func GetMetaType(att *expr.AttributeExpr) (typeName string, importS *ImportSpec) {
 	if att == nil {
-		return typeName, importS
+		return
 	}
 	if args, ok := att.Meta["struct:field:type"]; ok {
 		if len(args) > 0 {
@@ -82,7 +116,7 @@ func getMetaTypeInfo(att *expr.AttributeExpr) (typeName string, importS *ImportS
 			importS.Name = args[2]
 		}
 	}
-	return typeName, importS
+	return
 }
 
 // GetMetaTypeImports parses the attribute for all user defined imports
@@ -113,30 +147,30 @@ func safelyGetMetaTypeImports(att *expr.AttributeExpr, seen map[string]struct{})
 			}
 		}
 	case *expr.Array:
-		_, im := getMetaTypeInfo(t.ElemType)
+		_, im := GetMetaType(t.ElemType)
 		if im != nil {
 			uniqueImports[*im] = struct{}{}
 		}
 	case *expr.Map:
-		_, im := getMetaTypeInfo(t.ElemType)
+		_, im := GetMetaType(t.ElemType)
 		if im != nil {
 			uniqueImports[*im] = struct{}{}
 		}
-		_, im = getMetaTypeInfo(t.KeyType)
+		_, im = GetMetaType(t.KeyType)
 		if im != nil {
 			uniqueImports[*im] = struct{}{}
 		}
 	case *expr.Object:
 		for _, key := range *t {
 			if key != nil {
-				_, im := getMetaTypeInfo(key.Attribute)
+				_, im := GetMetaType(key.Attribute)
 				if im != nil {
 					uniqueImports[*im] = struct{}{}
 				}
 			}
 		}
 	}
-	_, im := getMetaTypeInfo(att)
+	_, im := GetMetaType(att)
 	if im != nil {
 		uniqueImports[*im] = struct{}{}
 	}
