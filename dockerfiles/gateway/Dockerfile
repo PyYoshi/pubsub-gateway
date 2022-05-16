@@ -1,4 +1,4 @@
-FROM golang:1.12-alpine3.9 AS builder
+FROM golang:1.18-alpine3.15 AS builder
 
 WORKDIR /go/src/github.com/PyYoshi/pubsub-gateway
 
@@ -9,7 +9,7 @@ RUN \
   && cd cmd/gateway/ \
   && go build -o /go/src/github.com/PyYoshi/pubsub-gateway/dist/gateway-server
 
-FROM alpine:3.9
+FROM alpine:3.15
 
 RUN \
     apk --no-cache add \
