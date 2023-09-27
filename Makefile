@@ -1,5 +1,5 @@
 setup-development:
-	go get -u goa.design/goa/v3/cmd/goa
+	go install goa.design/goa/v3/cmd/goa@v3
 
 generate:
 	goa gen github.com/PyYoshi/pubsub-gateway/design -o ./
