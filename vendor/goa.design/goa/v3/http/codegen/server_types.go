@@ -26,23 +26,22 @@ func ServerTypeFiles(genpkg string, root *expr.RootExpr) []*codegen.File {
 // slices, maps or objects always use pointers either implicitly - slices and
 // maps - or explicitly - objects.
 //
-//   * The payload struct fields (if a struct) hold pointers when not required
+//   - The payload struct fields (if a struct) hold pointers when not required
 //     and have no default value.
 //
-//   * Request body fields (if the body is a struct) always hold pointers to
+//   - Request body fields (if the body is a struct) always hold pointers to
 //     allow for explicit validation.
 //
-//   * Request header, path and query string parameter variables hold pointers
+//   - Request header, path and query string parameter variables hold pointers
 //     when not required. Request header, body fields and param variables that
 //     have default values are never required (enforced by DSL engine).
 //
-//   * The result struct fields (if a struct) hold pointers when not required
+//   - The result struct fields (if a struct) hold pointers when not required
 //     or have a default value (so generated code can set when null)
 //
-//   * Response body fields (if the body is a struct) and header variables hold
+//   - Response body fields (if the body is a struct) and header variables hold
 //     pointers when not required and have no default value.
-//
-func serverType(genpkg string, svc *expr.HTTPServiceExpr, seen map[string]struct{}) *codegen.File {
+func serverType(genpkg string, svc *expr.HTTPServiceExpr, _ map[string]struct{}) *codegen.File {
 	var (
 		path    string
 		data    = HTTPServices.Get(svc.Name())
@@ -50,6 +49,7 @@ func serverType(genpkg string, svc *expr.HTTPServiceExpr, seen map[string]struct
 	)
 	path = filepath.Join(codegen.Gendir, "http", svcName, "server", "types.go")
 	imports := []*codegen.ImportSpec{
+		{Path: "encoding/json"},
 		{Path: "unicode/utf8"},
 		{Path: genpkg + "/" + svcName, Name: data.Service.PkgName},
 		codegen.GoaImport(""),
@@ -176,7 +176,7 @@ func serverType(genpkg string, svc *expr.HTTPServiceExpr, seen map[string]struct
 				Name:    "server-payload-init",
 				Source:  serverTypeInitT,
 				Data:    init,
-				FuncMap: map[string]interface{}{"fieldCode": fieldCode},
+				FuncMap: map[string]any{"fieldCode": fieldCode},
 			})
 		}
 		if isWebSocketEndpoint(adata) && adata.ServerWebSocket.Payload != nil {
@@ -185,7 +185,7 @@ func serverType(genpkg string, svc *expr.HTTPServiceExpr, seen map[string]struct
 					Name:    "server-payload-init",
 					Source:  serverTypeInitT,
 					Data:    init,
-					FuncMap: map[string]interface{}{"fieldCode": fieldCode},
+					FuncMap: map[string]any{"fieldCode": fieldCode},
 				})
 			}
 		}
@@ -229,7 +229,7 @@ func fieldCode(init *InitData, typ string) string {
 	// because the headers and params cannot be user types.
 	c, _, err := codegen.InitStructFields(initArgs, varn, "", init.ReturnTypePkg)
 	if err != nil {
-		panic(err) //bug
+		panic(err) // bug
 	}
 	return c
 }

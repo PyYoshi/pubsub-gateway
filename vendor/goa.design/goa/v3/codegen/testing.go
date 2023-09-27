@@ -3,7 +3,6 @@ package codegen
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
@@ -21,8 +20,12 @@ func RunDSL(t *testing.T, dsl func()) *expr.RootExpr {
 	eval.Reset()
 	expr.Root = new(expr.RootExpr)
 	expr.Root.GeneratedTypes = &expr.GeneratedRoot{}
-	eval.Register(expr.Root)
-	eval.Register(expr.Root.GeneratedTypes)
+	if err := eval.Register(expr.Root); err != nil {
+		t.Fatal(err)
+	}
+	if err := eval.Register(expr.Root.GeneratedTypes); err != nil {
+		t.Fatal(err)
+	}
 	expr.Root.API = expr.NewAPIExpr("test api", func() {})
 	expr.Root.API.Servers = []*expr.ServerExpr{expr.Root.API.DefaultServer()}
 	if !eval.Execute(dsl, nil) {
@@ -83,7 +86,7 @@ func FormatTestCode(t *testing.T, code string) string {
 	if err := finalizeGoSource(tmp); err != nil {
 		t.Fatal(err)
 	}
-	content, err := ioutil.ReadFile(tmp)
+	content, err := os.ReadFile(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,14 +109,14 @@ func Diff(t *testing.T, s1, s2 string) string {
 	defer os.Remove(right)
 	cmd := exec.Command("diff", left, right)
 	diffb, _ := cmd.CombinedOutput()
-	return strings.Replace(string(diffb), "\t", " ␉ ", -1)
+	return strings.ReplaceAll(string(diffb), "\t", " ␉ ")
 }
 
 // CreateTempFile creates a temporary file and writes the given content.
 // It is used only for testing.
 func CreateTempFile(t *testing.T, content string) string {
 	t.Helper()
-	f, err := ioutil.TempFile("", "")
+	f, err := os.CreateTemp("", "")
 	if err != nil {
 		t.Fatal(err)
 	}

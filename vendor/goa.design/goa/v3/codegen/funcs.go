@@ -32,8 +32,8 @@ type (
 )
 
 // TemplateFuncs lists common template helper functions.
-func TemplateFuncs() map[string]interface{} {
-	return map[string]interface{}{
+func TemplateFuncs() map[string]any {
+	return map[string]any{
 		"commandLine": CommandLine,
 		"comment":     Comment,
 	}
@@ -150,9 +150,9 @@ func CamelCase(name string, firstUpper bool, acronym bool) string {
 			case firstUpper && acronym:
 				// u is already in upper case. Nothing to do here.
 			case firstUpper && !acronym:
-				u = strings.Title(strings.ToLower(u))
+				u = expr.Title(strings.ToLower(u))
 			case w > 0 && !acronym:
-				u = strings.Title(strings.ToLower(u))
+				u = expr.Title(strings.ToLower(u))
 			case w == 0:
 				u = strings.ToLower(u)
 			}
@@ -169,7 +169,7 @@ func CamelCase(name string, firstUpper bool, acronym bool) string {
 		if w == 0 && !firstUpper {
 			runes[w] = unicode.ToLower(runes[w])
 		}
-		//advance to next word
+		// advance to next word
 		w = i
 	}
 
@@ -183,7 +183,7 @@ func CamelCase(name string, firstUpper bool, acronym bool) string {
 func SnakeCase(name string) string {
 	// Special handling for single "words" starting with multiple upper case letters
 	for u, l := range toLower {
-		name = strings.Replace(name, u, l, -1)
+		name = strings.ReplaceAll(name, u, l)
 	}
 
 	// Remove leading and trailing blank spaces and replace any blank spaces in
@@ -191,7 +191,7 @@ func SnakeCase(name string) string {
 	name = strings.Join(strings.Fields(name), "_")
 
 	// Special handling for dashes to convert them into underscores
-	name = strings.Replace(name, "-", "_", -1)
+	name = strings.ReplaceAll(name, "-", "_")
 
 	var b bytes.Buffer
 	ln := len(name)
@@ -200,7 +200,7 @@ func SnakeCase(name string) string {
 	}
 	n := rune(name[0])
 	b.WriteRune(unicode.ToLower(n))
-	lastLower, isLower, lastUnder, isUnder := false, true, false, false
+	var lastLower, isLower, lastUnder, isUnder bool
 	for i := 1; i < ln; i++ {
 		r := rune(name[i])
 		isLower = unicode.IsLower(r) && unicode.IsLetter(r) || unicode.IsDigit(r)
@@ -229,7 +229,7 @@ func KebabCase(name string) string {
 	if name[ln-1] == '_' {
 		name = name[:ln-1]
 	}
-	return strings.Replace(name, "_", "-", -1)
+	return strings.ReplaceAll(name, "_", "-")
 }
 
 // WrapText produces lines with text capped at maxChars
@@ -274,7 +274,7 @@ func InitStructFields(args []*InitArgData, targetVar, sourcePkg, targetPkg strin
 		switch {
 		case arg.FieldName == "" && arg.FieldType == nil:
 		// do nothing
-		case expr.Equal(arg.Type, arg.FieldType):
+		case expr.Equal(unalias(arg.Type), arg.FieldType):
 			// arg type and struct field type are the same. No need to call transform
 			// to initialize the field
 			deref := ""
@@ -284,7 +284,11 @@ func InitStructFields(args []*InitArgData, targetVar, sourcePkg, targetPkg strin
 			code += fmt.Sprintf("%s.%s = %s%s\n", targetVar, arg.FieldName, deref, arg.Name)
 		case expr.IsPrimitive(arg.FieldType):
 			// aliased primitive type
-			t := scope.GoFullTypeRef(&expr.AttributeExpr{Type: arg.FieldType}, targetPkg)
+			pkg := targetPkg
+			if loc := UserTypeLocation(arg.FieldType); loc != nil {
+				pkg = loc.PackageName()
+			}
+			t := scope.GoFullTypeRef(&expr.AttributeExpr{Type: arg.FieldType}, pkg)
 			cast := fmt.Sprintf("%s(%s)", t, arg.Name)
 			if arg.Pointer {
 				code += "if " + arg.Name + " != nil {\n"
@@ -314,6 +318,18 @@ func InitStructFields(args []*InitArgData, targetVar, sourcePkg, targetPkg strin
 		}
 	}
 	return code, helpers, nil
+}
+
+// Get the underlying primitive type of a aliased type or return the type itself
+// if not aliased.
+func unalias(dt expr.DataType) expr.DataType {
+	if ut, ok := dt.(expr.UserType); ok {
+		if _, ok := ut.Attribute().Type.(expr.Primitive); ok {
+			return ut.Attribute().Type
+		}
+		return unalias(ut.Attribute().Type)
+	}
+	return dt
 }
 
 func runeSpacePosRev(r []rune) int {
@@ -387,6 +403,7 @@ var (
 		"RAM":   true,
 		"RHS":   true,
 		"RPC":   true,
+		"SDK":   true,
 		"SLA":   true,
 		"SMTP":  true,
 		"SQL":   true,

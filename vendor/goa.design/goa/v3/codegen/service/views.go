@@ -16,7 +16,7 @@ type viewedType struct {
 
 // ViewsFile returns the views file for the given service which contains
 // logic to render result types using the defined views.
-func ViewsFile(genpkg string, service *expr.ServiceExpr) *codegen.File {
+func ViewsFile(_ string, service *expr.ServiceExpr) *codegen.File {
 	svc := Services.Get(service.Name)
 	if len(svc.projectedTypes) == 0 {
 		return nil
@@ -49,6 +49,15 @@ func ViewsFile(genpkg string, service *expr.ServiceExpr) *codegen.File {
 			})
 		}
 
+		// Union methods
+		for _, m := range svc.viewedUnionMethods {
+			sections = append(sections, &codegen.SectionTemplate{
+				Name:   "viewed-union-value-method",
+				Source: unionValueMethodT,
+				Data:   m,
+			})
+		}
+
 		// generate a map for result types with view name as key and the fields
 		// rendered in the view as value.
 		var (
@@ -77,7 +86,7 @@ func ViewsFile(genpkg string, service *expr.ServiceExpr) *codegen.File {
 		sections = append(sections, &codegen.SectionTemplate{
 			Name:   "viewed-type-map",
 			Source: viewedMapT,
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"ViewedTypes": rtdata,
 			},
 		})
@@ -112,7 +121,7 @@ func {{ .Name }}(result {{ .Ref }}) (err error) {
 }
 `
 
-// input: map[string]interface{}{"ViewedTypes": []*viewedType}
+// input: map[string]any{"ViewedTypes": []*viewedType}
 const viewedMapT = `var (
 {{- range .ViewedTypes }}
 	{{ printf "%sMap is a map indexing the attribute names of %s by view name." .Name .Name | comment }}

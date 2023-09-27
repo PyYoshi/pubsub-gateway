@@ -9,7 +9,6 @@ import (
 	"go/scanner"
 	"go/token"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,9 +48,9 @@ type (
 		// renders the section text.
 		Source string
 		// FuncMap lists the functions used to render the templates.
-		FuncMap map[string]interface{}
+		FuncMap map[string]any
 		// Data used as input of template.
-		Data interface{}
+		Data any
 	}
 )
 
@@ -83,14 +82,14 @@ func (f *File) Render(dir string) (string, error) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return "", err
 	}
 
 	file, err := os.OpenFile(
 		path,
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY,
-		0644,
+		0600,
 	)
 	if err != nil {
 		return "", err
@@ -138,7 +137,7 @@ func finalizeGoSource(path string) error {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		content, _ := ioutil.ReadFile(path)
+		content, _ := os.ReadFile(path)
 		var buf bytes.Buffer
 		scanner.PrintError(&buf, err)
 		return fmt.Errorf("%s\n========\nContent:\n%s", buf.String(), content)
@@ -169,7 +168,7 @@ func finalizeGoSource(path string) error {
 	w.Close()
 
 	// Format code using goimport standard
-	bs, err := ioutil.ReadFile(path)
+	bs, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -181,5 +180,5 @@ func finalizeGoSource(path string) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, bs, os.ModePerm)
+	return os.WriteFile(path, bs, os.ModePerm)
 }

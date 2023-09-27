@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"sort"
@@ -66,7 +65,7 @@ func Debug(mux goahttp.Muxer, w io.Writer) func(http.Handler) http.Handler {
 			}
 
 			// Request body
-			b, err := ioutil.ReadAll(r.Body)
+			b, err := io.ReadAll(r.Body)
 			if err != nil {
 				b = []byte("failed to read body: " + err.Error())
 			}
@@ -77,7 +76,7 @@ func Debug(mux goahttp.Muxer, w io.Writer) func(http.Handler) http.Handler {
 					buf.WriteString(fmt.Sprintf("[%s] %s\n", reqID, line))
 				}
 			}
-			r.Body = ioutil.NopCloser(bytes.NewBuffer(b))
+			r.Body = io.NopCloser(bytes.NewBuffer(b))
 
 			dupper := &responseDupper{ResponseWriter: rw, Buffer: &bytes.Buffer{}}
 			h.ServeHTTP(dupper, r)
@@ -101,7 +100,7 @@ func Debug(mux goahttp.Muxer, w io.Writer) func(http.Handler) http.Handler {
 				}
 			}
 			buf.WriteByte('\n')
-			w.Write(buf.Bytes())
+			w.Write(buf.Bytes()) // nolint: errcheck
 		})
 	}
 }
@@ -130,6 +129,6 @@ func (r *responseDupper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // Do not use as a reliable way to get unique IDs, instead use for things like logging.
 func shortID() string {
 	b := make([]byte, 6)
-	io.ReadFull(rand.Reader, b)
+	io.ReadFull(rand.Reader, b) // nolint: errcheck
 	return base64.RawURLEncoding.EncodeToString(b)
 }

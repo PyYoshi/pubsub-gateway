@@ -1,7 +1,6 @@
 package openapi
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
@@ -19,7 +18,7 @@ type Tag struct {
 	// ExternalDocs is additional external documentation for this tag.
 	ExternalDocs *ExternalDocs `json:"externalDocs,omitempty" yaml:"externalDocs,omitempty"`
 	// Extensions defines the OpenAPI extensions.
-	Extensions map[string]interface{} `json:"-" yaml:"-"`
+	Extensions map[string]any `json:"-" yaml:"-"`
 }
 
 // TagsFromExpr extracts the OpenAPI related metadata from the given expression.
@@ -30,44 +29,48 @@ func TagsFromExpr(mdata expr.MetaExpr) (tags []*Tag) {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		chunks := strings.Split(key, ":")
-		if len(chunks) != 3 {
+		chunks := strings.SplitN(key, ":", 4)
+		if len(chunks) < 3 {
 			continue
 		}
 		if (chunks[0] != "swagger" && chunks[0] != "openapi") || chunks[1] != "tag" {
 			continue
 		}
 
-		tag := &Tag{Name: chunks[2]}
-
-		mdata[key] = mdata[fmt.Sprintf("%s:desc", key)]
-		if len(mdata[key]) != 0 {
-			tag.Description = mdata[key][0]
+		name := chunks[2]
+		var tag *Tag
+		for _, t := range tags {
+			if t.Name == name {
+				tag = t
+				break
+			}
 		}
-
-		hasDocs := false
-		docs := &ExternalDocs{}
-
-		mdata[key] = mdata[fmt.Sprintf("%s:url", key)]
-		if len(mdata[key]) != 0 {
-			docs.URL = mdata[key][0]
-			hasDocs = true
+		if tag == nil {
+			tag = &Tag{Name: chunks[2]}
+			tags = append(tags, tag)
 		}
-
-		mdata[key] = mdata[fmt.Sprintf("%s:url:desc", key)]
-		if len(mdata[key]) != 0 {
-			docs.Description = mdata[key][0]
-			hasDocs = true
+		if len(chunks) == 4 {
+			switch chunks[3] {
+			case "desc":
+				tag.Description = mdata[key][0]
+			case "url":
+				if tag.ExternalDocs == nil {
+					tag.ExternalDocs = &ExternalDocs{}
+				}
+				tag.ExternalDocs.URL = mdata[key][0]
+			case "url:desc":
+				if tag.ExternalDocs == nil {
+					tag.ExternalDocs = &ExternalDocs{}
+				}
+				tag.ExternalDocs.Description = mdata[key][0]
+			default:
+				idx := strings.Index(key, "extension:")
+				if idx == -1 {
+					continue
+				}
+				tag.Extensions = extensionsFromExprWithPrefix(mdata, key[:idx+10])
+			}
 		}
-
-		if hasDocs {
-			tag.ExternalDocs = docs
-		}
-
-		extensionsPrefix := fmt.Sprintf("%s:extension:", key)
-		tag.Extensions = extensionsFromExprWithPrefix(mdata, extensionsPrefix)
-
-		tags = append(tags, tag)
 	}
 
 	return
@@ -75,12 +78,10 @@ func TagsFromExpr(mdata expr.MetaExpr) (tags []*Tag) {
 
 // TagNamesFromExpr computes the names of the OpenAPI tags specified in the
 // given metadata expressions.
-func TagNamesFromExpr(mdatas ...expr.MetaExpr) (tagNames []string) {
-	for _, mdata := range mdatas {
-		tags := TagsFromExpr(mdata)
-		for _, tag := range tags {
-			tagNames = append(tagNames, tag.Name)
-		}
+func TagNamesFromExpr(mdata expr.MetaExpr) (tagNames []string) {
+	tags := TagsFromExpr(mdata)
+	for _, tag := range tags {
+		tagNames = append(tagNames, tag.Name)
 	}
 	return
 }
@@ -93,6 +94,6 @@ func (t Tag) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalYAML returns value which marshaled in place of the original value
-func (t Tag) MarshalYAML() (interface{}, error) {
+func (t Tag) MarshalYAML() (any, error) {
 	return MarshalYAML(_tag(t), t.Extensions)
 }

@@ -2,8 +2,10 @@ package openapiv3
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 
 	"goa.design/goa/v3/expr"
 	"goa.design/goa/v3/http/codegen/openapi"
@@ -12,12 +14,28 @@ import (
 // OpenAPIVersion is the OpenAPI specification version targeted by this package.
 const OpenAPIVersion = "3.0.3"
 
+var (
+	routeIndexReplacementRegExp = regexp.MustCompile(`\((.*){routeIndex}\)`)
+)
+
+const (
+	defaultOperationIDFormat = "{service}#{method}(#{routeIndex})"
+)
+
 // New returns the OpenAPI v3 specification for the given API.
 // It returns nil if the design does not define HTTP endpoints.
 func New(root *expr.RootExpr) *OpenAPI {
 	if root == nil || root.API == nil || root.API.HTTP == nil || len(root.API.HTTP.Services) == 0 {
 		// No HTTP transport
 		return nil
+	}
+
+	m, ok := root.API.Meta.Last("openapi:example")
+	if !ok {
+		m, ok = root.API.Meta.Last("swagger:example")
+	}
+	if ok && m == "false" {
+		root.API.ExampleGenerator.Randomizer = nil
 	}
 
 	var (
@@ -123,7 +141,7 @@ func buildPaths(h *expr.HTTPExpr, bodies map[string]map[string]*EndpointBodies, 
 					// Remove any wildcards that is defined in path as a workaround to
 					// https://github.com/OAI/OpenAPI-Specification/issues/291
 					key = expr.HTTPWildcardRegex.ReplaceAllString(key, "/{$1}")
-					operation := buildOperation(key, r, sbod[e.Name()], api.Random())
+					operation := buildOperation(key, r, sbod[e.Name()], api.ExampleGenerator)
 					path, ok := paths[key]
 					if !ok {
 						path = new(PathItem)
@@ -147,7 +165,7 @@ func buildPaths(h *expr.HTTPExpr, bodies map[string]map[string]*EndpointBodies, 
 					}
 					path.Extensions = openapi.ExtensionsFromExpr(r.Endpoint.Meta)
 					if len(exts) > 0 {
-						path.Extensions = make(map[string]interface{})
+						path.Extensions = make(map[string]any)
 						for k, v := range exts {
 							path.Extensions[k] = v
 						}
@@ -177,43 +195,48 @@ func buildPaths(h *expr.HTTPExpr, bodies map[string]map[string]*EndpointBodies, 
 }
 
 // buildOperation builds the OpenAPI Operation object for the given path.
-func buildOperation(key string, r *expr.RouteExpr, bodies *EndpointBodies, rand *expr.Random) *Operation {
+func buildOperation(key string, r *expr.RouteExpr, bodies *EndpointBodies, rand *expr.ExampleGenerator) *Operation {
 	e := r.Endpoint
 	m := e.MethodExpr
 	svc := e.Service
 
-	// operation ID
-	var opID string
-	{
-		opID = fmt.Sprintf("%s#%s", svc.Name(), e.Name())
-		// An endpoint can have multiple routes. If there are multiple routes for
-		// the endpoint suffix the operation ID with the route index.
-		index := 0
-		for i, rt := range r.Endpoint.Routes {
-			if rt == r {
-				index = i
-				break
+	// OpenAPI summary
+	var summary string
+	setSummary := func(meta expr.MetaExpr) {
+		for n, mdata := range meta {
+			if (n == "openapi:summary" || n == "swagger:summary") && len(mdata) > 0 {
+				if mdata[0] == "{path}" {
+					summary = r.Path
+				} else {
+					summary = mdata[0]
+				}
 			}
-		}
-		if index > 0 {
-			opID = fmt.Sprintf("%s#%d", opID, index)
 		}
 	}
 
-	// OpenAPI summary
-	var summary string
 	{
 		summary = fmt.Sprintf("%s %s", e.Name(), svc.Name())
-		for n, mdata := range r.Endpoint.Meta {
-			if (n == "openapi:summary" || n == "swagger:summary") && len(mdata) > 0 {
-				summary = mdata[0]
+		setSummary(expr.Root.API.Meta)
+		setSummary(r.Endpoint.Meta)
+		setSummary(m.Meta)
+	}
+
+	// OpenAPI operationId
+	var operationIDFormat string
+	setOperationIDFormat := func(meta expr.MetaExpr) {
+		for n, mdata := range meta {
+			if (n == "openapi:operationId") && len(mdata) > 0 {
+				operationIDFormat = mdata[0]
 			}
 		}
-		for n, mdata := range m.Meta {
-			if (n == "openapi:summary" || n == "swagger:summary") && len(mdata) > 0 {
-				summary = mdata[0]
-			}
-		}
+	}
+
+	{
+		operationIDFormat = defaultOperationIDFormat
+		setOperationIDFormat(expr.Root.API.Meta)
+		setOperationIDFormat(m.Service.Meta)
+		setOperationIDFormat(r.Endpoint.Meta)
+		setOperationIDFormat(m.Meta)
 	}
 
 	// request body
@@ -223,10 +246,8 @@ func buildOperation(key string, r *expr.RouteExpr, bodies *EndpointBodies, rand 
 		if e.MultipartRequest {
 			ct = "multipart/form-data"
 		}
-		mt := &MediaType{
-			Schema:  bodies.RequestBody,
-			Example: e.Body.Example(rand),
-		}
+		mt := &MediaType{Schema: bodies.RequestBody}
+		initExamples(mt, e.Body, rand)
 		requestBody = &RequestBodyRef{Value: &RequestBody{
 			Description: e.Body.Description,
 			Required:    e.Body.Type != expr.Empty,
@@ -276,8 +297,10 @@ func buildOperation(key string, r *expr.RouteExpr, bodies *EndpointBodies, rand 
 				desc += ": " + *resp.Description
 			}
 			resp.Description = &desc
-			for _, content := range resp.Content {
-				content.Example = nil
+			if er.Type == expr.ErrorResult && len(er.Response.Body.ExtractUserExamples()) == 0 {
+				for _, content := range resp.Content {
+					content.Example = nil
+				}
 			}
 			responses[strconv.Itoa(er.Response.StatusCode)] = &ResponseRef{Value: resp}
 		}
@@ -286,10 +309,20 @@ func buildOperation(key string, r *expr.RouteExpr, bodies *EndpointBodies, rand 
 	// tag names
 	var tagNames []string
 	{
-		tagNames = openapi.TagNamesFromExpr(svc.Meta, e.Meta)
+		tagNames = openapi.TagNamesFromExpr(e.Meta)
 		if len(tagNames) == 0 {
 			// By default tag with service name
 			tagNames = []string{r.Endpoint.Service.Name()}
+		}
+	}
+
+	// An endpoint can have multiple routes, so we need to be able to build a unique
+	// operationId for each route.
+	var routeIndex int
+	for i, rt := range e.Routes {
+		if rt == r {
+			routeIndex = i
+			break
 		}
 	}
 
@@ -297,7 +330,7 @@ func buildOperation(key string, r *expr.RouteExpr, bodies *EndpointBodies, rand 
 		Tags:         tagNames,
 		Summary:      summary,
 		Description:  e.Description(),
-		OperationID:  opID,
+		OperationID:  parseOperationIDTemplate(operationIDFormat, svc.Name(), e.Name(), routeIndex),
 		Parameters:   params,
 		RequestBody:  requestBody,
 		Responses:    responses,
@@ -362,10 +395,27 @@ func buildFileServerOperation(key string, fs *expr.HTTPFileServerExpr, api *expr
 		}
 	}
 
+	// OpenAPI operationId
+	var operationIDFormat string
+	setOperationIDFormat := func(meta expr.MetaExpr) {
+		for n, mdata := range meta {
+			if n == "openapi:operationId" && len(mdata) > 0 {
+				operationIDFormat = mdata[0]
+			}
+		}
+	}
+
+	{
+		operationIDFormat = defaultOperationIDFormat
+		setOperationIDFormat(api.Meta)
+		setOperationIDFormat(svc.Meta)
+		setOperationIDFormat(fs.Meta)
+	}
+
 	// tag names
 	var tagNames []string
 	{
-		tagNames = openapi.TagNamesFromExpr(svc.Meta, fs.Meta)
+		tagNames = openapi.TagNamesFromExpr(fs.Meta)
 		if len(tagNames) == 0 {
 			// By default tag with service name
 			tagNames = []string{svc.Name()}
@@ -373,7 +423,7 @@ func buildFileServerOperation(key string, fs *expr.HTTPFileServerExpr, api *expr
 	}
 
 	return &Operation{
-		OperationID:  fmt.Sprintf("%s#%s", svc.Name(), key),
+		OperationID:  parseOperationIDTemplate(operationIDFormat, svc.Name(), key, 0),
 		Description:  fs.Description,
 		Summary:      summary,
 		Parameters:   params,
@@ -386,6 +436,33 @@ func buildFileServerOperation(key string, fs *expr.HTTPFileServerExpr, api *expr
 	}
 }
 
+func parseOperationIDTemplate(template, service, method string, routeIndex int) string {
+	// Early return if no replacement is needed for the template.
+	if !strings.Contains(template, "{") && routeIndex == 0 {
+		return template
+	}
+
+	// The template replacer
+	repl := strings.NewReplacer(
+		"{service}", service,
+		"{method}", method,
+	)
+
+	operationID := repl.Replace(template)
+
+	if routeIndex == 0 {
+		return routeIndexReplacementRegExp.ReplaceAllString(operationID, "")
+	}
+
+	// If the routeIndex is greater than 0, we need to add the routeIndex to the operationId.
+	if sep := routeIndexReplacementRegExp.FindStringSubmatch(template); sep != nil {
+		return routeIndexReplacementRegExp.ReplaceAllString(operationID, fmt.Sprintf("%s%d", sep[1], routeIndex))
+	}
+
+	// Fallback in the event that the operationId doesn't contain the routeIndex placeholder.
+	return fmt.Sprintf("%s#%d", operationID, routeIndex)
+}
+
 // buildServers builds the OpenAPI Server objects from the given server
 // expressions.
 func buildServers(servers []*expr.ServerExpr) []*Server {
@@ -395,8 +472,8 @@ func buildServers(servers []*expr.ServerExpr) []*Server {
 		for _, host := range svr.Hosts {
 			var (
 				serverVariable   = make(map[string]*ServerVariable)
-				defaultValue     interface{}
-				validationValues []interface{}
+				defaultValue     any
+				validationValues []any
 			)
 
 			// Get the first URL expression in the host by default.
@@ -541,25 +618,16 @@ func buildSecurityScheme(se *expr.SchemeExpr) *SecurityScheme {
 
 // buildTags builds the OpenAPI Tag object from the API expression.
 func buildTags(api *expr.APIExpr) []*openapi.Tag {
-	// if a tag with same name is defined in API, Service, and endpoint
-	// Meta expressions then the definition in endpoint Meta expression
-	// takes highest precedence followed by Service and API.
-
 	m := make(map[string]*openapi.Tag)
+	for _, t := range openapi.TagsFromExpr(api.Meta) {
+		m[t.Name] = t
+	}
 	for _, s := range api.HTTP.Services {
 		if !mustGenerate(s.Meta) || !mustGenerate(s.ServiceExpr.Meta) {
 			continue
 		}
 		for _, t := range openapi.TagsFromExpr(s.Meta) {
 			m[t.Name] = t
-		}
-		for _, e := range s.HTTPEndpoints {
-			if !mustGenerate(e.Meta) || !mustGenerate(e.MethodExpr.Meta) {
-				continue
-			}
-			for _, t := range openapi.TagsFromExpr(e.Meta) {
-				m[t.Name] = t
-			}
 		}
 	}
 
@@ -583,7 +651,10 @@ func buildTags(api *expr.APIExpr) []*openapi.Tag {
 				if !mustGenerate(s.Meta) || !mustGenerate(s.ServiceExpr.Meta) {
 					continue
 				}
-				tags = append(tags, &openapi.Tag{Name: s.Name(), Description: s.Description()})
+				tags = append(tags, &openapi.Tag{
+					Name:        s.Name(),
+					Description: s.Description(),
+				})
 			}
 		}
 	}

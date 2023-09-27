@@ -53,15 +53,7 @@ var (
 			AttributeExpr: &AttributeExpr{
 				Type:        errorResultType,
 				Description: "Error response result type",
-				UserExamples: []*ExampleExpr{{
-					Summary: "BadRequest",
-					Value: Val{
-						"name":    "bad_request",
-						"id":      "3F1FKVRR",
-						"message": "Value of ID must be an integer",
-					},
-				}},
-				Validation: &ValidationExpr{Required: []string{"name", "id", "message", "temporary", "timeout", "fault"}},
+				Validation:  &ValidationExpr{Required: []string{"name", "id", "message", "temporary", "timeout", "fault"}},
 			},
 			TypeName: "error",
 		},
@@ -134,7 +126,7 @@ func CanonicalIdentifier(identifier string) string {
 }
 
 // Kind implements DataKind.
-func (m *ResultTypeExpr) Kind() Kind { return ResultTypeKind }
+func (*ResultTypeExpr) Kind() Kind { return ResultTypeKind }
 
 // Dup creates a deep copy of the result type given a deep copy of its attribute.
 func (m *ResultTypeExpr) Dup(att *AttributeExpr) UserType {
@@ -186,7 +178,7 @@ func (m *ResultTypeExpr) Finalize() {
 	}
 	m.UserTypeExpr.Finalize()
 	seen := make(map[string]struct{})
-	walkAttribute(m.AttributeExpr, func(_ string, att *AttributeExpr) error {
+	walkAttribute(m.AttributeExpr, func(_ string, att *AttributeExpr) error { // nolint: errcheck
 		if rt, ok := att.Type.(*ResultTypeExpr); ok {
 			if _, ok := seen[rt.Identifier]; !ok {
 				seen[rt.Identifier] = struct{}{}
@@ -270,7 +262,7 @@ func projectSingle(m *ResultTypeExpr, view string, seen map[string]*AttributeExp
 	// Compute type name
 	typeName := m.TypeName
 	if view != "default" {
-		typeName += strings.Title(view)
+		typeName += Title(view)
 	}
 
 	var ut *UserTypeExpr

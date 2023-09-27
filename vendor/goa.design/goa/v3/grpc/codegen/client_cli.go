@@ -27,7 +27,7 @@ func ClientCLIFiles(genpkg string, root *expr.RootExpr) []*codegen.File {
 			sd := GRPCServices.Get(svc.Name())
 			command := cli.BuildCommandData(sd.Service)
 			for _, e := range sd.Endpoints {
-				flags, buildFunction := buildFlags(sd, e)
+				flags, buildFunction := buildFlags(e)
 				subcmd := cli.BuildSubcommandData(sd.Service.Name, e.Method, buildFunction, flags)
 				command.Subcommands = append(command.Subcommands, subcmd)
 			}
@@ -132,7 +132,7 @@ func payloadBuilders(genpkg string, svc *expr.GRPCServiceExpr, data *cli.Command
 	return &codegen.File{Path: fpath, SectionTemplates: sections}
 }
 
-func buildFlags(svc *ServiceData, e *EndpointData) ([]*cli.FlagData, *cli.BuildFunctionData) {
+func buildFlags(e *EndpointData) ([]*cli.FlagData, *cli.BuildFunctionData) {
 	if e.Request != nil {
 		return makeFlags(e, e.Request.CLIArgs)
 	}
@@ -202,10 +202,10 @@ func makeFlags(e *EndpointData, args []*InitArgData) ([]*cli.FlagData, *cli.Buil
 
 const parseEndpointT = `// ParseEndpoint returns the endpoint and payload as specified on the command
 // line.
-func ParseEndpoint(cc *grpc.ClientConn, opts ...grpc.CallOption) (goa.Endpoint, interface{}, error) {
+func ParseEndpoint(cc *grpc.ClientConn, opts ...grpc.CallOption) (goa.Endpoint, any, error) {
 	{{ .FlagsCode }}
 	var (
-		data     interface{}
+		data     any
 		endpoint goa.Endpoint
 		err      error
 	)

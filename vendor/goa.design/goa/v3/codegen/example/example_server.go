@@ -79,35 +79,35 @@ func exampleSvrMain(genpkg string, root *expr.RootExpr, svr *expr.ServerExpr) *c
 		{
 			Name:   "server-main-start",
 			Source: mainStartT,
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"Server": svrdata,
 			},
-			FuncMap: map[string]interface{}{
+			FuncMap: map[string]any{
 				"join": strings.Join,
 			},
 		}, {
 			Name:   "server-main-logger",
 			Source: mainLoggerT,
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"APIPkg": apiPkg,
 			},
 		}, {
 			Name:   "server-main-services",
 			Source: mainSvcsT,
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"APIPkg":   apiPkg,
 				"Services": svcData,
 			},
-			FuncMap: map[string]interface{}{
+			FuncMap: map[string]any{
 				"mustInitServices": mustInitServices,
 			},
 		}, {
 			Name:   "server-main-endpoints",
 			Source: mainEndpointsT,
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"Services": svcData,
 			},
-			FuncMap: map[string]interface{}{
+			FuncMap: map[string]any{
 				"mustInitServices": mustInitServices,
 			},
 		}, {
@@ -116,11 +116,11 @@ func exampleSvrMain(genpkg string, root *expr.RootExpr, svr *expr.ServerExpr) *c
 		}, {
 			Name:   "server-main-handler",
 			Source: mainServerHndlrT,
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"Server":   svrdata,
 				"Services": svcData,
 			},
-			FuncMap: map[string]interface{}{
+			FuncMap: map[string]any{
 				"goify":   codegen.Goify,
 				"join":    strings.Join,
 				"toUpper": strings.ToUpper,
@@ -258,16 +258,14 @@ func main() {
 						}
 					}
 					if !{{ .VarName }}Seen {
-						fmt.Fprintf(os.Stderr, "invalid value for URL '{{ .Name }}' variable: %q (valid values: {{ join .Values "," }})\n", *{{ .VarName }}F)
-						os.Exit(1)
+						logger.Fatalf("invalid value for URL '{{ .Name }}' variable: %q (valid values: {{ join .Values "," }})\n", *{{ .VarName }}F)
 					}
 				{{- end }}
 				addr = strings.Replace(addr, {{ printf "\"{%s}\"" .Name }}, *{{ .VarName }}F, -1)
 			{{- end }}
 			u, err := url.Parse(addr)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid URL %#v: %s\n", addr, err)
-				os.Exit(1)
+				logger.Fatalf("invalid URL %#v: %s\n", addr, err)
 			}
 			if *secureF {
 				u.Scheme = "{{ $u.Transport.Type }}s"
@@ -278,8 +276,7 @@ func main() {
 			if *{{ $u.Transport.Type }}PortF != "" {
 				h, _, err := net.SplitHostPort(u.Host)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "invalid URL %#v: %s\n", u.Host, err)
-					os.Exit(1)
+					logger.Fatalf("invalid URL %#v: %s\n", u.Host, err)
 				}
 				u.Host = net.JoinHostPort(h, *{{ $u.Transport.Type }}PortF)
 			} else if u.Port() == "" {
@@ -291,7 +288,7 @@ func main() {
 	{{ end }}
 {{- end }}
 	default:
-		fmt.Fprintf(os.Stderr, "invalid host argument: %q (valid hosts: {{ join .Server.AvailableHosts "|" }})\n", *hostF)
+		logger.Fatalf("invalid host argument: %q (valid hosts: {{ join .Server.AvailableHosts "|" }})\n", *hostF)
 	}
 `
 

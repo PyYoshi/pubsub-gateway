@@ -35,14 +35,14 @@ func GoNativeTypeName(t expr.DataType) string {
 	case expr.BytesKind:
 		return "[]byte"
 	case expr.AnyKind:
-		return "interface{}"
+		return "any"
 	default:
 		panic(fmt.Sprintf("cannot compute native Go type for %T", t)) // bug
 	}
 }
 
 // AttributeTags computes the struct field tags from its metadata if any.
-func AttributeTags(parent, att *expr.AttributeExpr) string {
+func AttributeTags(_, att *expr.AttributeExpr) string {
 	var elems []string
 	keys := make([]string, len(att.Meta))
 	i := 0

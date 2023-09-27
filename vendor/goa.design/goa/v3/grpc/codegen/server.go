@@ -37,17 +37,19 @@ func serverFile(genpkg string, svc *expr.GRPCServiceExpr) *codegen.File {
 	{
 		svcName := data.Service.PathName
 		fpath = filepath.Join(codegen.Gendir, "grpc", svcName, "server", "server.go")
+		imports := []*codegen.ImportSpec{
+			{Path: "context"},
+			{Path: "errors"},
+			codegen.GoaImport(""),
+			codegen.GoaNamedImport("grpc", "goagrpc"),
+			{Path: "google.golang.org/grpc/codes"},
+			{Path: path.Join(genpkg, svcName), Name: data.Service.PkgName},
+			{Path: path.Join(genpkg, svcName, "views"), Name: data.Service.ViewsPkg},
+			{Path: path.Join(genpkg, "grpc", svcName, pbPkgName), Name: data.PkgName},
+		}
+		imports = append(imports, data.Service.UserTypeImports...)
 		sections = []*codegen.SectionTemplate{
-			codegen.Header(svc.Name()+" gRPC server", "server", []*codegen.ImportSpec{
-				{Path: "context"},
-				{Path: "errors"},
-				codegen.GoaImport(""),
-				codegen.GoaNamedImport("grpc", "goagrpc"),
-				{Path: "google.golang.org/grpc/codes"},
-				{Path: path.Join(genpkg, svcName), Name: data.Service.PkgName},
-				{Path: path.Join(genpkg, svcName, "views"), Name: data.Service.ViewsPkg},
-				{Path: path.Join(genpkg, "grpc", svcName, pbPkgName), Name: data.PkgName},
-			}),
+			codegen.Header(svc.Name()+" gRPC server", "server", imports),
 			{Name: "server-struct", Source: serverStructT, Data: data},
 		}
 		for _, e := range data.Endpoints {
@@ -147,7 +149,7 @@ func serverEncodeDecode(genpkg string, svc *expr.GRPCServiceExpr) *codegen.File 
 					Name:   "response-encoder",
 					Source: responseEncoderT,
 					Data:   e,
-					FuncMap: map[string]interface{}{
+					FuncMap: map[string]any{
 						"typeConversionData":       typeConversionData,
 						"metadataEncodeDecodeData": metadataEncodeDecodeData,
 					},
@@ -168,8 +170,8 @@ func serverEncodeDecode(genpkg string, svc *expr.GRPCServiceExpr) *codegen.File 
 	return &codegen.File{Path: fpath, SectionTemplates: sections}
 }
 
-func transTmplFuncs(s *expr.GRPCServiceExpr) map[string]interface{} {
-	return map[string]interface{}{
+func transTmplFuncs(s *expr.GRPCServiceExpr) map[string]any {
+	return map[string]any{
 		"goTypeRef": func(dt expr.DataType) string {
 			return service.Services.Get(s.Name()).Scope.GoTypeRef(&expr.AttributeExpr{Type: dt})
 		},
@@ -178,8 +180,8 @@ func transTmplFuncs(s *expr.GRPCServiceExpr) map[string]interface{} {
 
 // typeConversionData produces the template data suitable for executing the
 // "type_conversion" template.
-func typeConversionData(dt expr.DataType, varName string, target string) map[string]interface{} {
-	return map[string]interface{}{
+func typeConversionData(dt expr.DataType, varName string, target string) map[string]any {
+	return map[string]any{
 		"Type":    dt,
 		"VarName": varName,
 		"Target":  target,
@@ -188,8 +190,8 @@ func typeConversionData(dt expr.DataType, varName string, target string) map[str
 
 // metadataEncodeDecodeData produces the template data suitable for executing the
 // "metadata_decoder" and "metadata_encoder" template.
-func metadataEncodeDecodeData(md *MetadataData, vname string) map[string]interface{} {
-	return map[string]interface{}{
+func metadataEncodeDecodeData(md *MetadataData, vname string) map[string]any {
+	return map[string]any{
 		"Metadata": md,
 		"VarName":  vname,
 	}
@@ -202,12 +204,6 @@ type {{ .ServerStruct }} struct {
 	{{ .Method.VarName }}H {{ if .ServerStream }}goagrpc.StreamHandler{{ else }}goagrpc.UnaryHandler{{ end }}
 {{- end }}
 	{{ .PkgName }}.Unimplemented{{ .ServerInterface }}
-}
-
-// ErrorNamer is an interface implemented by generated error structs that
-// exposes the name of the error as defined in the expr.
-type ErrorNamer interface {
-  ErrorName() string
 }
 `
 
@@ -264,9 +260,9 @@ func (s *{{ .ServerStruct }}) {{ .Method.VarName }}(
 {{- define "handle_error" }}
 	if err != nil {
 	{{- if .Errors }}
-		var en ErrorNamer
+		var en goa.GoaErrorNamer
 		if errors.As(err, &en) {
-			switch en.ErrorName() {
+			switch en.GoaErrorName() {
 		{{- range .Errors }}
 			case {{ printf "%q" .Name }}:
 				{{- if .Response.ServerConvert }}
@@ -285,7 +281,7 @@ func (s *{{ .ServerStruct }}) {{ .Method.VarName }}(
 
 // input: EndpointData
 const requestDecoderT = `{{ printf "Decode%sRequest decodes requests sent to %q service %q endpoint." .Method.VarName .ServiceName .Method.Name | comment }}
-func Decode{{ .Method.VarName }}Request(ctx context.Context, v interface{}, md metadata.MD) (interface{}, error) {
+func Decode{{ .Method.VarName }}Request(ctx context.Context, v any, md metadata.MD) (any, error) {
 {{- if .Request.Metadata }}
 	var (
 	{{- range .Request.Metadata }}
@@ -295,7 +291,7 @@ func Decode{{ .Method.VarName }}Request(ctx context.Context, v interface{}, md m
 	)
 	{
 	{{- range .Request.Metadata }}
-		{{- if or (eq .Type.Name "string") (eq .Type.Name "any") }}
+		{{- if or (eq .TypeName "string") (eq .Type.Name "any") }}
 			{{- if .Required }}
 				if vals := md.Get({{ printf "%q" .Name }}); len(vals) == 0 {
 					err = goa.MergeErrors(err, goa.MissingFieldError({{ printf "%q" .Name }}, "metadata"))
@@ -398,7 +394,7 @@ func Decode{{ .Method.VarName }}Request(ctx context.Context, v interface{}, md m
 
 // input: EndpointData
 const responseEncoderT = `{{ printf "Encode%sResponse encodes responses from the %q service %q endpoint." .Method.VarName .ServiceName .Method.Name | comment }}
-func Encode{{ .Method.VarName }}Response(ctx context.Context, v interface{}, hdr, trlr *metadata.MD) (interface{}, error) {
+func Encode{{ .Method.VarName }}Response(ctx context.Context, v any, hdr, trlr *metadata.MD) (any, error) {
 {{- if .ViewedResultRef }}
 	vres, ok := v.({{ .ViewedResultRef }})
 	if !ok {
@@ -436,10 +432,10 @@ func Encode{{ .Method.VarName }}Response(ctx context.Context, v interface{}, hdr
 		{{- end }}
 		{{ .VarName }}.Append({{ printf "%q" .Metadata.Name }},
 			{{- if eq .Metadata.Type.Name "bytes" }} string(
-			{{- else if not (eq .Metadata.Type.Name "string") }} fmt.Sprintf("%v",
+			{{- else if not (eq .Metadata.TypeName "string") }} fmt.Sprintf("%v",
 			{{- end }}
 			{{- if .Metadata.Pointer }}*{{ end }}p.{{ .Metadata.FieldName }}
-			{{- if or (eq .Metadata.Type.Name "bytes") (not (eq .Metadata.Type.Name "string")) }})
+			{{- if or (eq .Metadata.Type.Name "bytes") (not (eq .Metadata.TypeName "string")) }})
 			{{- end }})
 		{{- if .Metadata.Pointer }}
 			}

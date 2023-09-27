@@ -201,7 +201,7 @@ func (m *MethodExpr) Validate() error {
 			// presence of struct:error:name meta in the object type.
 			if i != j && e.Type == e2.Type && IsObject(e.Type) {
 				var found bool
-				walkAttribute(e.AttributeExpr, func(name string, att *AttributeExpr) error {
+				walkAttribute(e.AttributeExpr, func(_ string, att *AttributeExpr) error { // nolint: errcheck
 					if _, ok := att.Meta["struct:error:name"]; ok {
 						found = true
 						return fmt.Errorf("struct:error:name found: stop iteration")
@@ -282,6 +282,18 @@ func (m *MethodExpr) Finalize() {
 		m.Result.Finalize()
 		if rt, ok := m.Result.Type.(*ResultTypeExpr); ok {
 			rt.Finalize()
+		}
+	}
+	for _, e := range m.Service.Errors {
+		found := false
+		for _, f := range m.Errors {
+			if e.Name == f.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.Errors = append(m.Errors, e)
 		}
 	}
 	for _, e := range m.Errors {

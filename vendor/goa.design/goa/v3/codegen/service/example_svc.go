@@ -58,7 +58,7 @@ func ExampleServiceFiles(genpkg string, root *expr.RootExpr) []*codegen.File {
 }
 
 // exampleServiceFile returns a basic implementation of the given service.
-func exampleServiceFile(genpkg string, root *expr.RootExpr, svc *expr.ServiceExpr, apipkg string) *codegen.File {
+func exampleServiceFile(genpkg string, _ *expr.RootExpr, svc *expr.ServiceExpr, apipkg string) *codegen.File {
 	data := Services.Get(svc.Name)
 	svcName := data.PathName
 	fpath := svcName + ".go"
@@ -67,7 +67,6 @@ func exampleServiceFile(genpkg string, root *expr.RootExpr, svc *expr.ServiceExp
 	}
 	specs := []*codegen.ImportSpec{
 		{Path: "io"},
-		{Path: "io/ioutil"},
 		{Path: "context"},
 		{Path: "log"},
 		{Path: "fmt"},
@@ -162,7 +161,7 @@ func (s *{{ .ServiceVarName }}srvc) {{ .VarName }}(ctx context.Context{{ if .Pay
 {{- end }}
 {{- if .SkipResponseBodyEncodeDecode }}
 	// resp is the HTTP response body stream.
-	resp = ioutil.NopCloser(strings.NewReader("{{ .Name }}"))
+	resp = io.NopCloser(strings.NewReader("{{ .Name }}"))
 {{- end }}
 {{- if .ViewedResult }}
 	{{- if not .ViewedResult.ViewName }}
